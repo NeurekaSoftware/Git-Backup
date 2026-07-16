@@ -41,176 +41,94 @@ public sealed class RepositoryRetentionService
         }
 
         AppLogger.Info(
-            "Retention run started. retentionDays={RetentionDays}, retentionMinimum={RetentionMinimum}",
+            "Retention run started. retentionDays={RetentionDays}, retentionMinimum={RetentionMinimum}.",
             retentionDays,
             retentionMinimum);
 
-        var objectStorageService = _objectStorageServiceFactory(settings.Storage);
+        using var objectStorageService = _objectStorageServiceFactory(settings.Storage);
         var cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays.Value);
-        AppLogger.Info("Retention cutoff: {CutoffTimestamp}", AppLogger.FormatTimestamp(cutoff));
+        AppLogger.Info("Retention cutoff resolved. cutoff={CutoffTimestamp}.", AppLogger.FormatTimestamp(cutoff));
 
-        var retentionResult = await ApplyRepositoryRetentionAsync(
-            objectStorageService,
-            cutoff,
-            retentionMinimum,
-            cancellationToken);
+        var result = await ApplyRepositoryRetentionAsync(objectStorageService, cutoff, retentionMinimum, cancellationToken);
 
         AppLogger.Info(
-            "Retention run completed. deletedSnapshots={DeletedSnapshots}, updatedIndexes={UpdatedIndexes}.",
-            retentionResult.DeletedSnapshots,
-            retentionResult.UpdatedIndexes);
+            "Retention run completed. deletedSnapshots={DeletedSnapshots}, emptiedRepositories={EmptiedRepositories}.",
+            result.DeletedSnapshots,
+            result.EmptiedRepositories);
     }
 
-    private async Task<(int DeletedSnapshots, int UpdatedIndexes)> ApplyRepositoryRetentionAsync(
+    /// <summary>
+    /// Prunes expired snapshots using the object listing as the source of truth: every archive
+    /// object encodes its own timestamp in its key, so retention needs no side index. Snapshots
+    /// are grouped by repository prefix, the newest <paramref name="retentionMinimum"/> are always
+    /// protected, and anything older than <paramref name="cutoff"/> beyond that is deleted in a
+    /// single batched call. When a repository loses all of its snapshots, its remaining direct
+    /// objects (the advisory metadata.json) are removed too so no orphaned prefix is left behind.
+    /// </summary>
+    private static async Task<(int DeletedSnapshots, int EmptiedRepositories)> ApplyRepositoryRetentionAsync(
         IObjectStorageService objectStorageService,
         DateTimeOffset cutoff,
         int retentionMinimum,
         CancellationToken cancellationToken)
     {
-        var deletedCount = 0;
-        var updatedIndexCount = 0;
+        var allKeys = await objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.RepositoriesPrefix, cancellationToken);
 
-        var repositoryRegistryObjectKey = StorageKeyBuilder.BuildRepositoryRegistryObjectKey();
-        var repositoryRegistryContent = await objectStorageService.GetTextIfExistsAsync(repositoryRegistryObjectKey, cancellationToken);
-        var repositoryRegistry = ParseOrCreateRepositoryRegistry(repositoryRegistryContent);
-        var knownIndexKeys = new HashSet<string>(repositoryRegistry.IndexKeys, StringComparer.Ordinal);
-        var repositoryRegistryChanged = false;
-
-        foreach (var repositoryIndexObjectKey in knownIndexKeys.ToArray())
+        var snapshotsByRepository = new Dictionary<string, List<(string ObjectKey, long TimestampUnixSeconds)>>(StringComparer.Ordinal);
+        foreach (var objectKey in allKeys)
         {
-            var repositoryIndexContent = await objectStorageService.GetTextIfExistsAsync(repositoryIndexObjectKey, cancellationToken);
-            if (string.IsNullOrWhiteSpace(repositoryIndexContent))
+            if (!StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out var timestampUnixSeconds))
             {
-                repositoryRegistryChanged = true;
-                knownIndexKeys.Remove(repositoryIndexObjectKey);
-                AppLogger.Warn(
-                    "Repository index is missing and will be removed from registry. indexObject={IndexObjectKey}",
-                    repositoryIndexObjectKey);
                 continue;
             }
 
-            if (!StorageIndexDocuments.TryDeserialize<RepositoryIndexDocument>(repositoryIndexContent, out var repositoryIndex) ||
-                repositoryIndex is null)
+            var repositoryPrefix = StorageKeyBuilder.GetParentPrefix(objectKey);
+            if (!snapshotsByRepository.TryGetValue(repositoryPrefix, out var snapshots))
             {
-                AppLogger.Warn(
-                    "Repository index contains invalid JSON and will be skipped. indexObject={IndexObjectKey}",
-                    repositoryIndexObjectKey);
-                continue;
+                snapshots = [];
+                snapshotsByRepository[repositoryPrefix] = snapshots;
             }
 
-            repositoryIndex.Snapshots ??= [];
+            snapshots.Add((objectKey, timestampUnixSeconds));
+        }
 
-            var normalizedSnapshots = repositoryIndex.Snapshots
-                .Where(IsValidSnapshot)
-                .GroupBy(snapshot => snapshot.RootPrefix, StringComparer.Ordinal)
-                .Select(group => group.OrderByDescending(snapshot => snapshot.TimestampUnixSeconds).First())
+        var expiredKeys = new List<string>();
+        var emptiedRepositories = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var (repositoryPrefix, snapshots) in snapshotsByRepository)
+        {
+            var ordered = snapshots
                 .OrderByDescending(snapshot => snapshot.TimestampUnixSeconds)
                 .ToList();
 
-            if (normalizedSnapshots.Count == 0)
-            {
-                repositoryRegistryChanged = true;
-                knownIndexKeys.Remove(repositoryIndexObjectKey);
-                AppLogger.Warn(
-                    "Repository index has no valid snapshots and will be removed from registry. indexObject={IndexObjectKey}",
-                    repositoryIndexObjectKey);
-                continue;
-            }
-
-            var protectedSnapshotCount = Math.Min(retentionMinimum, normalizedSnapshots.Count);
-            var expiredSnapshots = normalizedSnapshots
-                .Skip(protectedSnapshotCount)
+            var protectedCount = Math.Min(retentionMinimum, ordered.Count);
+            var expired = ordered
+                .Skip(protectedCount)
                 .Where(snapshot => DateTimeOffset.FromUnixTimeSeconds(snapshot.TimestampUnixSeconds) < cutoff)
-                .ToArray();
-
-            foreach (var snapshot in expiredSnapshots)
-            {
-                await objectStorageService.DeleteObjectsAsync([snapshot.RootPrefix], cancellationToken);
-                deletedCount++;
-                AppLogger.Info("Deleted expired repository snapshot. target={SnapshotTarget}", snapshot.RootPrefix);
-            }
-
-            var retainedSnapshots = normalizedSnapshots
-                .Where((snapshot, index) =>
-                    index < protectedSnapshotCount ||
-                    DateTimeOffset.FromUnixTimeSeconds(snapshot.TimestampUnixSeconds) >= cutoff)
-                .OrderByDescending(snapshot => snapshot.TimestampUnixSeconds)
                 .ToList();
 
-            if (!RepositorySnapshotsAreEqual(repositoryIndex.Snapshots, retainedSnapshots))
+            expiredKeys.AddRange(expired.Select(snapshot => snapshot.ObjectKey));
+
+            if (expired.Count == ordered.Count)
             {
-                repositoryIndex.Snapshots = retainedSnapshots;
-                await objectStorageService.UploadTextAsync(
-                    repositoryIndexObjectKey,
-                    StorageIndexDocuments.Serialize(repositoryIndex),
-                    cancellationToken);
-                updatedIndexCount++;
+                emptiedRepositories.Add(repositoryPrefix);
             }
         }
 
-        if (repositoryRegistryChanged)
-        {
-            repositoryRegistry.IndexKeys = knownIndexKeys.OrderBy(value => value, StringComparer.Ordinal).ToList();
-            await objectStorageService.UploadTextAsync(
-                repositoryRegistryObjectKey,
-                StorageIndexDocuments.Serialize(repositoryRegistry),
-                cancellationToken);
-        }
-
-        AppLogger.Info(
-            "Repository retention cleanup completed. deletedSnapshots={DeletedSnapshots}, updatedIndexes={UpdatedIndexes}.",
-            deletedCount,
-            updatedIndexCount);
-        return (deletedCount, updatedIndexCount);
-    }
-
-    private static bool IsValidSnapshot(RepositorySnapshotDocument snapshot)
-    {
-        return !string.IsNullOrWhiteSpace(snapshot.RootPrefix) && snapshot.TimestampUnixSeconds > 0;
-    }
-
-    private static bool RepositorySnapshotsAreEqual(
-        IReadOnlyList<RepositorySnapshotDocument> left,
-        IReadOnlyList<RepositorySnapshotDocument> right)
-    {
-        if (left.Count != right.Count)
-        {
-            return false;
-        }
-
-        for (var i = 0; i < left.Count; i++)
-        {
-            var leftSnapshot = left[i];
-            var rightSnapshot = right[i];
-
-            if (!string.Equals(leftSnapshot.RootPrefix, rightSnapshot.RootPrefix, StringComparison.Ordinal) ||
-                leftSnapshot.TimestampUnixSeconds != rightSnapshot.TimestampUnixSeconds)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static RepositoryRegistryDocument ParseOrCreateRepositoryRegistry(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return new RepositoryRegistryDocument();
-        }
-
-        if (!StorageIndexDocuments.TryDeserialize<RepositoryRegistryDocument>(json, out var parsed) || parsed is null)
-        {
-            AppLogger.Warn("Repository index registry is invalid JSON. Rebuilding from discovered state.");
-            return new RepositoryRegistryDocument();
-        }
-
-        parsed.IndexKeys = (parsed.IndexKeys ?? [])
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim('/'))
-            .Distinct(StringComparer.Ordinal)
+        // Direct children of emptied repository prefixes that are not archives (the advisory
+        // metadata.json). Matching on the exact parent prefix keeps this from touching a nested
+        // repository's objects.
+        var orphanKeys = allKeys
+            .Where(objectKey =>
+                !StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out _) &&
+                emptiedRepositories.Contains(StorageKeyBuilder.GetParentPrefix(objectKey)))
             .ToList();
-        return parsed;
+
+        var keysToDelete = expiredKeys.Concat(orphanKeys).ToList();
+        if (keysToDelete.Count > 0)
+        {
+            await objectStorageService.DeleteObjectsAsync(keysToDelete, cancellationToken);
+        }
+
+        return (expiredKeys.Count, emptiedRepositories.Count);
     }
 }

@@ -6,7 +6,7 @@ public interface IGitRepositoryService
         string remoteUrl,
         string localPath,
         GitCredential? credential,
-        bool force,
+        bool cache,
         bool includeLfs,
         CancellationToken cancellationToken);
 }

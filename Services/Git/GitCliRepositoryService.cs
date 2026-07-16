@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using GitBackup.Runtime;
 
 namespace GitBackup.Services.Git;
 
@@ -9,35 +10,54 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
         string remoteUrl,
         string localPath,
         GitCredential? credential,
-        bool force,
+        bool cache,
         bool includeLfs,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var shouldClone = !await IsBareRepositoryAsync(localPath, cancellationToken);
+        var hasMirror = await IsBareRepositoryAsync(localPath, cancellationToken);
 
-        if (force && Directory.Exists(localPath))
+        if (cache && hasMirror)
         {
-            Directory.Delete(localPath, recursive: true);
-            shouldClone = true;
-        }
-
-        if (shouldClone)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
-            await CloneMirrorAsync(remoteUrl, localPath, credential, cancellationToken);
+            // Update the existing mirror. The --mirror refspec (+refs/*:refs/*) force-updates
+            // rewritten branches and --prune drops refs deleted upstream, so the mirror tracks the
+            // remote exactly. If the fetch fails (corruption, unrelated history, …), self-heal by
+            // re-cloning from scratch so a cached repository can never get permanently stuck.
+            try
+            {
+                await SetRemoteUrlAsync(localPath, remoteUrl, credential, cancellationToken);
+                await FetchAsync(localPath, credential, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                AppLogger.Warn(
+                    "Incremental mirror fetch failed; re-cloning from scratch. localPath={LocalPath}, error={ErrorMessage}.",
+                    localPath,
+                    exception.Message);
+                await FreshCloneAsync(remoteUrl, localPath, credential, cancellationToken);
+            }
         }
         else
         {
-            await SetRemoteUrlAsync(localPath, remoteUrl, credential, cancellationToken);
-            await FetchAsync(localPath, credential, cancellationToken);
+            await FreshCloneAsync(remoteUrl, localPath, credential, cancellationToken);
         }
 
         if (includeLfs)
         {
             await FetchLfsAsync(localPath, credential, cancellationToken);
         }
+    }
+
+    private static async Task FreshCloneAsync(string remoteUrl, string localPath, GitCredential? credential, CancellationToken cancellationToken)
+    {
+        if (Directory.Exists(localPath))
+        {
+            Directory.Delete(localPath, recursive: true);
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
+        await CloneMirrorAsync(remoteUrl, localPath, credential, cancellationToken);
     }
 
     private static async Task<bool> IsBareRepositoryAsync(string localPath, CancellationToken cancellationToken)

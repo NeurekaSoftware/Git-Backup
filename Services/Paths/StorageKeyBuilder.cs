@@ -2,7 +2,9 @@ namespace GitBackup.Services.Paths;
 
 public static class StorageKeyBuilder
 {
-    private const string DefaultIndexPrefix = "indexes";
+    public const string ArchiveObjectNameSuffix = "_repo.tar.gz";
+    public const string RepositoryMetadataObjectName = "metadata.json";
+    public const string RepositoriesPrefix = "repositories/";
 
     public static string BuildProviderRepositoryPrefix(string provider, RepositoryPathInfo repository)
     {
@@ -30,51 +32,41 @@ public static class StorageKeyBuilder
         return string.Join('/', segments);
     }
 
-    public static string BuildProviderRepositoryIdentity(string provider, RepositoryPathInfo repository)
+    public static string BuildArchiveObjectKey(string repositoryPrefix, long timestampUnixSeconds)
     {
-        var segments = new List<string>
+        return $"{repositoryPrefix.Trim('/')}/{timestampUnixSeconds}{ArchiveObjectNameSuffix}";
+    }
+
+    public static string BuildRepositoryMetadataObjectKey(string repositoryPrefix)
+    {
+        return $"{repositoryPrefix.Trim('/')}/{RepositoryMetadataObjectName}";
+    }
+
+    /// <summary>
+    /// Parses the snapshot timestamp encoded in an archive object key
+    /// (<c>{prefix}/{unixSeconds}_repo.tar.gz</c>). Returns false for non-archive keys.
+    /// </summary>
+    public static bool TryGetArchiveTimestamp(string objectKey, out long timestampUnixSeconds)
+    {
+        timestampUnixSeconds = 0;
+        if (!objectKey.EndsWith(ArchiveObjectNameSuffix, StringComparison.Ordinal))
         {
-            "provider",
-            provider.Trim().ToLowerInvariant(),
-            repository.BaseDomain
-        };
+            return false;
+        }
 
-        segments.AddRange(repository.Hierarchy);
-        return string.Join('/', segments);
+        var leaf = objectKey[(objectKey.LastIndexOf('/') + 1)..];
+        var timestampText = leaf[..^ArchiveObjectNameSuffix.Length];
+        return long.TryParse(timestampText, out timestampUnixSeconds) && timestampUnixSeconds > 0;
     }
 
-    public static string BuildUrlRepositoryIdentity(RepositoryPathInfo repository)
+    /// <summary>
+    /// Returns the parent prefix of an object key (everything before the last '/'),
+    /// which for an archive or metadata object is its repository prefix.
+    /// </summary>
+    public static string GetParentPrefix(string objectKey)
     {
-        var segments = new List<string>
-        {
-            "url",
-            repository.FullDomain
-        };
-
-        segments.AddRange(repository.Hierarchy);
-        return string.Join('/', segments);
-    }
-
-    public static string BuildRepositoryRegistryObjectKey()
-    {
-        var normalizedIndexPrefix = EnsurePrefix(DefaultIndexPrefix);
-        return $"{normalizedIndexPrefix}repositories/registry.json".Trim('/');
-    }
-
-    public static string BuildProviderRepositoryIndexObjectKey(
-        string provider,
-        RepositoryPathInfo repository)
-    {
-        var normalizedIndexPrefix = EnsurePrefix(DefaultIndexPrefix);
-        var repositoryIdentity = BuildProviderRepositoryIdentity(provider, repository);
-        return $"{normalizedIndexPrefix}repositories/{repositoryIdentity}/index.json".Trim('/');
-    }
-
-    public static string BuildUrlRepositoryIndexObjectKey(RepositoryPathInfo repository)
-    {
-        var normalizedIndexPrefix = EnsurePrefix(DefaultIndexPrefix);
-        var repositoryIdentity = BuildUrlRepositoryIdentity(repository);
-        return $"{normalizedIndexPrefix}repositories/{repositoryIdentity}/index.json".Trim('/');
+        var lastSlash = objectKey.LastIndexOf('/');
+        return lastSlash <= 0 ? string.Empty : objectKey[..lastSlash];
     }
 
     public static string EnsurePrefix(string keyOrPrefix)

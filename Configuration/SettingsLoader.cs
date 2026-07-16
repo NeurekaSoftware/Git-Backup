@@ -84,7 +84,6 @@ public sealed class SettingsLoader
         settings.Storage ??= new StorageConfig();
         settings.Storage.ForcePathStyle ??= false;
         settings.Storage.PayloadSignatureMode = NormalizePayloadSignatureMode(settings.Storage.PayloadSignatureMode);
-        settings.Storage.AlwaysCalculateContentMd5 ??= false;
         settings.Storage.RetentionMinimum ??= 1;
         settings.Credentials ??= new Dictionary<string, CredentialConfig>(StringComparer.OrdinalIgnoreCase);
         settings.Credentials = new Dictionary<string, CredentialConfig>(settings.Credentials, StringComparer.OrdinalIgnoreCase);
@@ -100,7 +99,8 @@ public sealed class SettingsLoader
             }
 
             repository.Enabled ??= true;
-            repository.Lfs ??= false;
+            repository.Lfs ??= true;
+            repository.Cache ??= true;
             repository.Mode = repository.Mode?.Trim().ToLowerInvariant();
             repository.Provider = repository.Provider?.Trim().ToLowerInvariant();
         }
