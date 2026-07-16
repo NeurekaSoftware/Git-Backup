@@ -1,17 +1,16 @@
 using System.Formats.Tar;
 using System.IO.Compression;
-using System.Reflection;
 using System.Text;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 using GitBackup.Services.Paths;
-using Genbox.SimpleS3.Core.Abstracts.Clients;
 using Genbox.SimpleS3.Core.Abstracts.Enums;
-using Genbox.SimpleS3.Core.Abstracts.Response;
 using Genbox.SimpleS3.Core.Common.Authentication;
 using Genbox.SimpleS3.Core.Common.Exceptions;
 using Genbox.SimpleS3.Core.Extensions;
+using Genbox.SimpleS3.Core.Network.Responses.S3Types;
 using Genbox.SimpleS3.Extensions.GenericS3;
+using Genbox.SimpleS3.Extensions.HttpClientFactory.Polly;
 using Genbox.SimpleS3.GenericS3;
 using Genbox.SimpleS3.ProviderBase;
 
@@ -19,45 +18,62 @@ namespace GitBackup.Services.Storage;
 
 public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 {
-    private readonly IObjectClient _objectClient;
+    private const string ArchiveContentType = "application/gzip";
+    private const string JsonContentType = "application/json";
+
+    private readonly GenericS3Client _client;
     private readonly string _bucket;
 
     public SimpleS3ObjectStorageService(StorageConfig storage)
     {
-        _bucket = storage.Bucket!;
+        _bucket = Require(storage.Bucket, "storage.bucket");
+        var endpoint = Require(storage.Endpoint, "storage.endpoint");
+        var region = Require(storage.Region, "storage.region");
+        var accessKeyId = Require(storage.AccessKeyId, "storage.accessKeyId");
+        var secretAccessKey = Require(storage.SecretAccessKey, "storage.secretAccessKey");
 
         var requestedPathStyle = storage.ForcePathStyle == true;
         var payloadSignatureMode = ResolvePayloadSignatureMode(storage.PayloadSignatureMode);
         var alwaysCalculateContentMd5 = storage.AlwaysCalculateContentMd5 == true;
-        var resolvedEndpoint = ResolveEndpoint(storage.Endpoint!, _bucket, requestedPathStyle);
+        var resolvedEndpoint = ResolveEndpoint(endpoint, _bucket, requestedPathStyle);
 
         var config = new GenericS3Config
         {
-            Credentials = new StringAccessKey(storage.AccessKeyId!, storage.SecretAccessKey!),
+            Credentials = new StringAccessKey(accessKeyId, secretAccessKey),
             Endpoint = resolvedEndpoint,
-            RegionCode = storage.Region!,
+            RegionCode = region,
             NamingMode = requestedPathStyle ? NamingMode.PathStyle : NamingMode.VirtualHost,
             PayloadSignatureMode = payloadSignatureMode,
             AlwaysCalculateContentMd5 = alwaysCalculateContentMd5,
             ThrowExceptionOnError = true
         };
 
-        var client = new GenericS3Client(config, new NetworkConfig());
+        // Retry transient failures (timeouts, connection resets, 5xx, 408) with exponential
+        // backoff and jitter. NetworkConfig wires this through the library's Polly integration.
+        var networkConfig = new NetworkConfig
+        {
+            Retries = 5,
+            RetryMode = RetryMode.ExponentialBackoffJitter,
+            MaxRandomDelay = TimeSpan.FromSeconds(1),
+            Timeout = TimeSpan.FromMinutes(15)
+        };
 
-        _objectClient = client;
-        AppLogger.Info("Object storage client initialized. provider=GenericS3");
+        _client = new GenericS3Client(config, networkConfig);
+
+        AppLogger.Info("Object storage client initialized. provider={Provider}.", "GenericS3");
         AppLogger.Debug(
-            "Object storage settings: endpoint={Endpoint}, resolvedEndpoint={ResolvedEndpoint}, region={Region}, bucket={Bucket}, forcePathStyle={ForcePathStyle}, payloadSignatureMode={PayloadSignatureMode}, alwaysCalculateContentMd5={AlwaysCalculateContentMd5}.",
-            storage.Endpoint,
+            "Object storage settings: endpoint={Endpoint}, resolvedEndpoint={ResolvedEndpoint}, region={Region}, bucket={Bucket}, forcePathStyle={ForcePathStyle}, payloadSignatureMode={PayloadSignatureMode}, alwaysCalculateContentMd5={AlwaysCalculateContentMd5}, retries={Retries}.",
+            endpoint,
             resolvedEndpoint,
-            storage.Region,
-            storage.Bucket,
-            storage.ForcePathStyle,
+            region,
+            _bucket,
+            requestedPathStyle,
             payloadSignatureMode,
-            alwaysCalculateContentMd5);
+            alwaysCalculateContentMd5,
+            networkConfig.Retries);
     }
 
-    public async Task<ArchiveUploadResult> UploadDirectoryAsTarGzAsync(
+    public async Task UploadDirectoryAsTarGzAsync(
         string localDirectory,
         string objectKey,
         CancellationToken cancellationToken)
@@ -94,20 +110,20 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
                 TarFile.CreateFromDirectory(localDirectory, gzipStream, includeBaseDirectory: false);
             }
 
-            await using var stream = File.OpenRead(temporaryArchivePath);
-            var response = await _objectClient.PutObjectAsync(
-                _bucket,
+            // Multipart upload lifts the single-PUT size ceiling for large repositories. The
+            // archive is a seekable temp file, so retries replay parts cleanly without buffering.
+            await using var uploadStream = File.OpenRead(temporaryArchivePath);
+            await ExecuteAsync(
+                "upload archive object",
                 normalizedObjectKey,
-                stream,
-                _ => { },
-                cancellationToken);
-            EnsureSuccess(response, $"upload archive object '{normalizedObjectKey}'");
-            AppLogger.Info("Archive uploaded. objectKey={ObjectKey}.", normalizedObjectKey);
+                () => _client.MultipartUploadAsync(
+                    _bucket,
+                    normalizedObjectKey,
+                    uploadStream,
+                    config: request => request.ContentType.Set(ArchiveContentType),
+                    token: cancellationToken));
 
-            return new ArchiveUploadResult
-            {
-                ObjectKey = normalizedObjectKey
-            };
+            AppLogger.Info("Archive uploaded. objectKey={ObjectKey}.", normalizedObjectKey);
         }
         finally
         {
@@ -121,61 +137,48 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
     public async Task UploadTextAsync(string objectKey, string content, CancellationToken cancellationToken)
     {
         var normalizedObjectKey = objectKey.Trim('/');
-        AppLogger.Debug("Uploading text object. objectKey={ObjectKey}, bytes={ByteCount}.", normalizedObjectKey, Encoding.UTF8.GetByteCount(content));
+        AppLogger.Debug(
+            "Uploading text object. objectKey={ObjectKey}, bytes={ByteCount}.",
+            normalizedObjectKey,
+            Encoding.UTF8.GetByteCount(content));
+
         var bytes = Encoding.UTF8.GetBytes(content);
         await using var stream = new MemoryStream(bytes, writable: false);
-        var response = await _objectClient.PutObjectAsync(_bucket, normalizedObjectKey, stream, _ => { }, cancellationToken);
-        EnsureSuccess(response, $"upload text object '{normalizedObjectKey}'");
-    }
-
-    public async Task<string?> GetTextIfExistsAsync(string objectKey, CancellationToken cancellationToken)
-    {
-        var normalizedObjectKey = objectKey.Trim('/');
-        if (string.IsNullOrWhiteSpace(normalizedObjectKey))
-        {
-            throw new ArgumentException("Object key is required.", nameof(objectKey));
-        }
-
-        try
-        {
-            using var response = await _objectClient.GetObjectAsync(_bucket, normalizedObjectKey, _ => { }, cancellationToken);
-            EnsureSuccess(response, $"download text object '{normalizedObjectKey}'");
-
-            using var reader = new StreamReader(response.Content, Encoding.UTF8);
-            return await reader.ReadToEndAsync(cancellationToken);
-        }
-        catch (S3RequestException exception) when (IsNotFound(exception.Response))
-        {
-            return null;
-        }
+        await ExecuteAsync(
+            "upload text object",
+            normalizedObjectKey,
+            () => _client.PutObjectAsync(
+                _bucket,
+                normalizedObjectKey,
+                stream,
+                request => request.ContentType.Set(JsonContentType),
+                cancellationToken));
     }
 
     public async Task<IReadOnlyList<string>> ListObjectKeysAsync(string prefix, CancellationToken cancellationToken)
     {
         var normalizedPrefix = StorageKeyBuilder.EnsurePrefix(prefix);
-        AppLogger.Debug("Listing object keys. prefix={Prefix}", normalizedPrefix);
-        var keys = new List<string>();
+        AppLogger.Debug("Listing object keys. prefix={Prefix}.", normalizedPrefix);
 
-        await foreach (var item in ObjectClientExtensions
-                           .ListAllObjectsAsync(_objectClient, _bucket, normalizedPrefix, false, cancellationToken)
-                           .WithCancellation(cancellationToken))
-        {
-            var key = ExtractObjectKey(item);
-            if (!string.IsNullOrWhiteSpace(key))
+        var keys = await ExecuteAsync(
+            "list objects",
+            normalizedPrefix,
+            async () =>
             {
-                keys.Add(key);
-            }
-        }
+                var collected = new List<string>();
+                await foreach (S3Object item in _client.ListAllObjectsAsync(_bucket, normalizedPrefix, false, cancellationToken))
+                {
+                    if (!string.IsNullOrWhiteSpace(item.ObjectKey))
+                    {
+                        collected.Add(item.ObjectKey);
+                    }
+                }
+
+                return (IReadOnlyList<string>)collected;
+            });
 
         AppLogger.Info("Object key listing completed. prefix={Prefix}, keyCount={KeyCount}.", normalizedPrefix, keys.Count);
         return keys;
-    }
-
-    public async Task DeletePrefixAsync(string prefix, CancellationToken cancellationToken)
-    {
-        AppLogger.Info("Deleting objects under prefix={Prefix}.", prefix);
-        var objectKeys = await ListObjectKeysAsync(prefix, cancellationToken);
-        await DeleteObjectsAsync(objectKeys, cancellationToken);
     }
 
     public async Task DeleteObjectsAsync(IEnumerable<string> objectKeys, CancellationToken cancellationToken)
@@ -193,31 +196,43 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         }
 
         AppLogger.Info("Deleting objects. count={ObjectCount}.", keys.Length);
-        var useSingleObjectDeletes = false;
+        await ExecuteAsync(
+            "delete objects",
+            $"{keys.Length} keys",
+            async () =>
+            {
+                var useSingleObjectDeletes = false;
 
-        foreach (var batch in keys.Chunk(1000))
-        {
-            if (useSingleObjectDeletes)
-            {
-                await DeleteObjectsIndividuallyAsync(batch, cancellationToken);
-                continue;
-            }
+                foreach (var batch in keys.Chunk(1000))
+                {
+                    if (useSingleObjectDeletes)
+                    {
+                        await DeleteObjectsIndividuallyAsync(batch, cancellationToken);
+                        continue;
+                    }
 
-            AppLogger.Debug("Deleting object batch. batchSize={BatchSize}.", batch.Length);
-            try
-            {
-                await ObjectClientExtensions.DeleteObjectsAsync(_objectClient, _bucket, batch, _ => { }, cancellationToken);
-            }
-            catch (S3RequestException exception) when (IsBulkDeleteSchemaError(exception))
-            {
-                AppLogger.Warn(
-                    "Bulk delete request was rejected by the storage provider. Switching to single-object deletes. batchSize={BatchSize}, error={ErrorMessage}.",
-                    batch.Length,
-                    exception.Message);
-                useSingleObjectDeletes = true;
-                await DeleteObjectsIndividuallyAsync(batch, cancellationToken);
-            }
-        }
+                    AppLogger.Debug("Deleting object batch. batchSize={BatchSize}.", batch.Length);
+                    try
+                    {
+                        await _client.DeleteObjectsAsync(_bucket, batch, _ => { }, cancellationToken);
+                    }
+                    catch (S3RequestException exception) when (IsBulkDeleteSchemaError(exception))
+                    {
+                        AppLogger.Warn(
+                            "Bulk delete was rejected by the storage provider. Switching to single-object deletes. batchSize={BatchSize}, error={ErrorMessage}.",
+                            batch.Length,
+                            exception.Message);
+                        useSingleObjectDeletes = true;
+                        await DeleteObjectsIndividuallyAsync(batch, cancellationToken);
+                    }
+                }
+            });
+    }
+
+    public void Dispose()
+    {
+        // Releases the internal HttpClient/handler owned by the client's service provider.
+        _client.Dispose();
     }
 
     private async Task DeleteObjectsIndividuallyAsync(IEnumerable<string> objectKeys, CancellationToken cancellationToken)
@@ -226,12 +241,66 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         foreach (var objectKey in objectKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var response = await _objectClient.DeleteObjectAsync(_bucket, objectKey, _ => { }, cancellationToken);
-            EnsureSuccess(response, $"delete object '{objectKey}'");
+            await _client.DeleteObjectAsync(_bucket, objectKey, _ => { }, cancellationToken);
             deletedCount++;
         }
 
         AppLogger.Debug("Single-object delete batch completed. batchSize={BatchSize}.", deletedCount);
+    }
+
+    /// <summary>
+    /// Runs an S3 operation, translating the library's <see cref="S3RequestException"/> into a
+    /// domain error logged with the operation and object key. With ThrowExceptionOnError enabled,
+    /// this is the single place failures surface, so context is not lost to a generic catch-all.
+    /// </summary>
+    private static async Task<T> ExecuteAsync<T>(string operation, string objectKey, Func<Task<T>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (S3RequestException exception)
+        {
+            throw ReportFailure(operation, objectKey, exception);
+        }
+    }
+
+    private static async Task ExecuteAsync(string operation, string objectKey, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (S3RequestException exception)
+        {
+            throw ReportFailure(operation, objectKey, exception);
+        }
+    }
+
+    private static InvalidOperationException ReportFailure(string operation, string objectKey, S3RequestException exception)
+    {
+        var detail = DescribeError(exception);
+        AppLogger.Error(
+            exception,
+            "Object storage operation failed. operation={Operation}, objectKey={ObjectKey}, detail={ErrorDetail}.",
+            operation,
+            objectKey,
+            detail);
+        return new InvalidOperationException($"storage: failed to {operation} '{objectKey}'. {detail}", exception);
+    }
+
+    private static string DescribeError(S3RequestException exception)
+    {
+        var error = exception.Response?.Error;
+        if (error is null)
+        {
+            return $"statusCode={exception.Response?.StatusCode}";
+        }
+
+        var details = error.GetErrorDetails();
+        return string.IsNullOrWhiteSpace(details)
+            ? $"{error.Code}: {error.Message}"
+            : $"{error.Code}: {error.Message} ({details})";
     }
 
     private static bool IsBulkDeleteSchemaError(S3RequestException exception)
@@ -245,29 +314,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         return message.Contains("MalformedXML", StringComparison.OrdinalIgnoreCase)
                || message.Contains("XML you provided was not well formed", StringComparison.OrdinalIgnoreCase)
                || message.Contains("did not validate against our published schema", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsNotFound(IResponse? response)
-    {
-        return response?.StatusCode == 404;
-    }
-
-    private static string? ExtractObjectKey(object item)
-    {
-        return ReadStringProperty(item, "ObjectKey")
-               ?? ReadStringProperty(item, "Key")
-               ?? ReadStringProperty(item, "Name");
-    }
-
-    private static string? ReadStringProperty(object instance, string propertyName)
-    {
-        var property = instance.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-        if (property?.PropertyType != typeof(string))
-        {
-            return null;
-        }
-
-        return (string?)property.GetValue(instance);
     }
 
     private static string ResolveEndpoint(string configuredEndpoint, string bucket, bool forcePathStyle)
@@ -315,18 +361,14 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         };
     }
 
-    private static void EnsureSuccess(IResponse response, string operation)
+    private static string Require(string? value, string name)
     {
-        if (response.IsSuccess)
+        if (string.IsNullOrWhiteSpace(value))
         {
-            return;
+            throw new ArgumentException($"Storage configuration '{name}' is required.", name);
         }
 
-        var detail = response.Error is null
-            ? $"statusCode={response.StatusCode}"
-            : $"{response.Error.Code}: {response.Error.Message} ({response.Error.GetErrorDetails()})";
-
-        throw new InvalidOperationException($"storage: failed to {operation}. {detail}");
+        return value;
     }
 
     private static void TryDeleteTemporaryFile(string path)
@@ -341,7 +383,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         catch (Exception exception)
         {
             AppLogger.Warn(
-                "Failed to remove temporary archive. path={Path}, error={ErrorMessage}",
+                "Failed to remove temporary archive. path={Path}, error={ErrorMessage}.",
                 path,
                 exception.Message);
         }

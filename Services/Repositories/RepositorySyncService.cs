@@ -12,9 +12,6 @@ namespace GitBackup.Services.Repositories;
 
 public sealed class RepositorySyncService
 {
-    private const string RepositoryMarkerName = ".repository-root";
-    private const string ArchiveObjectNameSuffix = "_repo.tar.gz";
-
     private readonly RepositoryProviderClientFactory _providerFactory;
     private readonly IGitRepositoryService _gitRepositoryService;
     private readonly Func<StorageConfig, IObjectStorageService> _objectStorageServiceFactory;
@@ -35,20 +32,17 @@ public sealed class RepositorySyncService
     public async Task RunAsync(Settings settings, CancellationToken cancellationToken)
     {
         var enabledRepositories = settings.Repositories.Where(repository => repository?.Enabled != false).ToArray();
-        AppLogger.Info("Repository run started. enabledJobs={EnabledJobCount}", enabledRepositories.Length);
+        AppLogger.Info("Repository run started. enabledJobs={EnabledJobCount}.", enabledRepositories.Length);
 
-        var objectStorageService = _objectStorageServiceFactory(settings.Storage);
-        var repositoryRegistryObjectKey = StorageKeyBuilder.BuildRepositoryRegistryObjectKey();
-
-        var repositoryRegistry = await LoadRepositoryRegistryAsync(objectStorageService, repositoryRegistryObjectKey, cancellationToken);
-        var knownIndexKeys = new HashSet<string>(repositoryRegistry.IndexKeys, StringComparer.Ordinal);
-        var repositoryRegistryChanged = false;
+        using var objectStorageService = _objectStorageServiceFactory(settings.Storage);
 
         AppLogger.Debug(
             "Repository storage target configured. endpoint={Endpoint}, bucket={Bucket}, region={Region}.",
             settings.Storage.Endpoint,
             settings.Storage.Bucket,
             settings.Storage.Region);
+
+        var syncedRepositories = 0;
 
         foreach (var repository in enabledRepositories)
         {
@@ -62,76 +56,52 @@ public sealed class RepositorySyncService
             {
                 if (string.Equals(repository.Mode, RepositoryJobModes.Provider, StringComparison.OrdinalIgnoreCase))
                 {
-                    repositoryRegistryChanged |= await RunProviderModeAsync(
-                        settings,
-                        repository,
-                        objectStorageService,
-                        knownIndexKeys,
-                        cancellationToken);
+                    syncedRepositories += await RunProviderModeAsync(settings, repository, objectStorageService, cancellationToken);
                 }
                 else if (string.Equals(repository.Mode, RepositoryJobModes.Url, StringComparison.OrdinalIgnoreCase))
                 {
-                    repositoryRegistryChanged |= await RunUrlModeAsync(
-                        settings,
-                        repository,
-                        objectStorageService,
-                        knownIndexKeys,
-                        cancellationToken);
+                    syncedRepositories += await RunUrlModeAsync(settings, repository, objectStorageService, cancellationToken);
                 }
                 else
                 {
-                    AppLogger.Warn(
-                        "Skipping repository job because mode is invalid. mode={Mode}",
-                        repository.Mode);
+                    AppLogger.Warn("Skipping repository job because mode is invalid. mode={Mode}.", repository.Mode);
                 }
             }
             catch (Exception exception)
             {
                 AppLogger.Error(
                     exception,
-                    "Repository job failed. mode={Mode}, error={ErrorMessage}",
+                    "Repository job failed. mode={Mode}, error={ErrorMessage}.",
                     repository.Mode,
                     exception.Message);
             }
         }
 
-        if (repositoryRegistryChanged)
-        {
-            repositoryRegistry.IndexKeys = knownIndexKeys.OrderBy(value => value, StringComparer.Ordinal).ToList();
-            await objectStorageService.UploadTextAsync(
-                repositoryRegistryObjectKey,
-                StorageIndexDocuments.Serialize(repositoryRegistry),
-                cancellationToken);
-        }
-
-        AppLogger.Info(
-            "Repository run completed. trackedRepositoryIndexes={RepositoryIndexCount}.",
-            knownIndexKeys.Count);
+        AppLogger.Info("Repository run completed. syncedRepositories={SyncedRepositoryCount}.", syncedRepositories);
     }
 
-    private async Task<bool> RunProviderModeAsync(
+    private async Task<int> RunProviderModeAsync(
         Settings settings,
         RepositoryJobConfig repository,
         IObjectStorageService objectStorageService,
-        HashSet<string> knownIndexKeys,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(repository.Provider) || string.IsNullOrWhiteSpace(repository.Credential))
         {
             AppLogger.Warn("Skipping provider repository job because provider or credential is missing.");
-            return false;
+            return 0;
         }
 
         if (!settings.Credentials.TryGetValue(repository.Credential, out var credentialConfig))
         {
             AppLogger.Warn(
-                "Skipping provider repository job because credential is missing. provider={Provider}, credential={Credential}",
+                "Skipping provider repository job because credential is missing. provider={Provider}, credential={Credential}.",
                 repository.Provider,
                 repository.Credential);
-            return false;
+            return 0;
         }
 
-        AppLogger.Info("Provider repository discovery started. provider={Provider}", repository.Provider);
+        AppLogger.Info("Provider repository discovery started. provider={Provider}.", repository.Provider);
         var providerClient = _providerFactory.Resolve(repository.Provider);
         var discoveredRepositories = await providerClient.ListOwnedRepositoriesAsync(repository, credentialConfig, cancellationToken);
         AppLogger.Info(
@@ -140,7 +110,7 @@ public sealed class RepositorySyncService
             discoveredRepositories.Count);
 
         var gitCredential = CredentialResolver.ResolveGitCredential(credentialConfig);
-        var registryChanged = false;
+        var syncedRepositories = 0;
 
         foreach (var discoveredRepository in discoveredRepositories)
         {
@@ -155,55 +125,49 @@ public sealed class RepositorySyncService
             {
                 var pathInfo = RepositoryPathParser.Parse(discoveredRepository.CloneUrl);
                 var repositoryPrefix = StorageKeyBuilder.BuildProviderRepositoryPrefix(repository.Provider, pathInfo);
-                var repositoryIdentity = StorageKeyBuilder.BuildProviderRepositoryIdentity(repository.Provider, pathInfo);
-                var repositoryIndexObjectKey = StorageKeyBuilder.BuildProviderRepositoryIndexObjectKey(repository.Provider, pathInfo);
                 var localPath = Path.Combine(
                     _workingRoot,
                     "repositories",
                     RepositoryJobModes.Provider,
                     ComputeDeterministicFolderName($"{repository.Provider}:{discoveredRepository.CloneUrl}"));
 
-                var indexAdded = await SyncRepositorySnapshotAsync(
+                await SyncRepositorySnapshotAsync(
                     mode: RepositoryJobModes.Provider,
                     repositoryUrl: discoveredRepository.CloneUrl,
-                    repositoryIdentity,
                     repositoryPrefix,
-                    repositoryIndexObjectKey,
                     localPath,
                     gitCredential,
                     force: true,
                     includeLfs: repository.Lfs == true,
                     objectStorageService,
-                    knownIndexKeys,
                     cancellationToken);
 
-                registryChanged |= indexAdded;
+                syncedRepositories++;
             }
             catch (Exception exception)
             {
                 AppLogger.Error(
                     exception,
-                    "Provider repository sync failed. provider={Provider}, repository={RepositoryUrl}, error={ErrorMessage}",
+                    "Provider repository sync failed. provider={Provider}, repository={RepositoryUrl}, error={ErrorMessage}.",
                     repository.Provider,
                     discoveredRepository.CloneUrl,
                     exception.Message);
             }
         }
 
-        return registryChanged;
+        return syncedRepositories;
     }
 
-    private async Task<bool> RunUrlModeAsync(
+    private async Task<int> RunUrlModeAsync(
         Settings settings,
         RepositoryJobConfig repository,
         IObjectStorageService objectStorageService,
-        HashSet<string> knownIndexKeys,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(repository.Url))
         {
             AppLogger.Warn("Skipping URL repository job because url is missing.");
-            return false;
+            return 0;
         }
 
         GitCredential? gitCredential = null;
@@ -212,10 +176,10 @@ public sealed class RepositorySyncService
             if (!settings.Credentials.TryGetValue(repository.Credential, out var credentialConfig))
             {
                 AppLogger.Warn(
-                    "Skipping URL repository job because credential is missing. repository={RepositoryUrl}, credential={Credential}",
+                    "Skipping URL repository job because credential is missing. repository={RepositoryUrl}, credential={Credential}.",
                     repository.Url,
                     repository.Credential);
-                return false;
+                return 0;
             }
 
             gitCredential = CredentialResolver.ResolveGitCredential(credentialConfig);
@@ -223,46 +187,34 @@ public sealed class RepositorySyncService
 
         var pathInfo = RepositoryPathParser.Parse(repository.Url);
         var repositoryPrefix = StorageKeyBuilder.BuildUrlRepositoryPrefix(pathInfo);
-        var repositoryIdentity = StorageKeyBuilder.BuildUrlRepositoryIdentity(pathInfo);
-        var repositoryIndexObjectKey = StorageKeyBuilder.BuildUrlRepositoryIndexObjectKey(pathInfo);
         var localPath = BuildLocalPathFromPrefix(repositoryPrefix);
 
-        return await SyncRepositorySnapshotAsync(
+        await SyncRepositorySnapshotAsync(
             mode: RepositoryJobModes.Url,
             repositoryUrl: repository.Url,
-            repositoryIdentity,
             repositoryPrefix,
-            repositoryIndexObjectKey,
             localPath,
             gitCredential,
             force: false,
             includeLfs: repository.Lfs == true,
             objectStorageService,
-            knownIndexKeys,
             cancellationToken);
+
+        return 1;
     }
 
-    private async Task<bool> SyncRepositorySnapshotAsync(
+    private async Task SyncRepositorySnapshotAsync(
         string mode,
         string repositoryUrl,
-        string repositoryIdentity,
         string repositoryPrefix,
-        string repositoryIndexObjectKey,
         string localPath,
         GitCredential? credential,
         bool force,
         bool includeLfs,
         IObjectStorageService objectStorageService,
-        HashSet<string> knownIndexKeys,
         CancellationToken cancellationToken)
     {
-        var repositoryIndexContent = await objectStorageService.GetTextIfExistsAsync(repositoryIndexObjectKey, cancellationToken);
-        var repositoryIndexDocument = ParseOrCreateRepositoryIndex(repositoryIndexContent, mode, repositoryIdentity);
-
-        AppLogger.Info(
-            "Repository sync started. mode={Mode}, repository={RepositoryUrl}",
-            mode,
-            repositoryUrl);
+        AppLogger.Info("Repository sync started. mode={Mode}, repository={RepositoryUrl}.", mode, repositoryUrl);
         AppLogger.Debug(
             "Repository working paths resolved. mode={Mode}, repository={RepositoryUrl}, localPath={LocalPath}, targetPrefix={TargetPrefix}.",
             mode,
@@ -279,37 +231,19 @@ public sealed class RepositorySyncService
             cancellationToken);
 
         var timestamp = DateTimeOffset.UtcNow;
-        var archiveObjectKey = $"{repositoryPrefix}/{BuildArchiveObjectName(timestamp)}";
+        var archiveObjectKey = StorageKeyBuilder.BuildArchiveObjectKey(repositoryPrefix, timestamp.ToUnixTimeSeconds());
 
-        await objectStorageService.UploadDirectoryAsTarGzAsync(
-            localPath,
-            archiveObjectKey,
-            cancellationToken);
+        await objectStorageService.UploadDirectoryAsTarGzAsync(localPath, archiveObjectKey, cancellationToken);
 
-        repositoryIndexDocument.Snapshots = repositoryIndexDocument.Snapshots
-            .Where(IsValidSnapshot)
-            .Where(snapshot => !string.Equals(snapshot.RootPrefix, archiveObjectKey, StringComparison.Ordinal))
-            .ToList();
-        repositoryIndexDocument.Snapshots.Add(new RepositorySnapshotDocument
+        var metadataDocument = new RepositoryMetadataDocument
         {
-            RootPrefix = archiveObjectKey,
-            TimestampUnixSeconds = timestamp.ToUnixTimeSeconds()
-        });
-
-        var updatedRepositoryIndexContent = StorageIndexDocuments.Serialize(repositoryIndexDocument);
-        if (!string.Equals(repositoryIndexContent, updatedRepositoryIndexContent, StringComparison.Ordinal))
-        {
-            await objectStorageService.UploadTextAsync(
-                repositoryIndexObjectKey,
-                updatedRepositoryIndexContent,
-                cancellationToken);
-        }
-
-        var indexAdded = knownIndexKeys.Add(repositoryIndexObjectKey);
-
+            Mode = mode,
+            RepositoryUrl = repositoryUrl,
+            UpdatedAtUnixSeconds = timestamp.ToUnixTimeSeconds()
+        };
         await objectStorageService.UploadTextAsync(
-            $"{repositoryPrefix}/{RepositoryMarkerName}",
-            $"mode={mode}\nrepository={repositoryUrl}\nupdatedAt={timestamp:O}",
+            StorageKeyBuilder.BuildRepositoryMetadataObjectKey(repositoryPrefix),
+            StorageMetadataDocuments.Serialize(metadataDocument),
             cancellationToken);
 
         AppLogger.Info(
@@ -317,64 +251,6 @@ public sealed class RepositorySyncService
             mode,
             repositoryUrl,
             repositoryPrefix);
-
-        return indexAdded;
-    }
-
-    private static RepositoryRegistryDocument ParseOrCreateRepositoryRegistry(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return new RepositoryRegistryDocument();
-        }
-
-        if (!StorageIndexDocuments.TryDeserialize<RepositoryRegistryDocument>(json, out var parsed) || parsed is null)
-        {
-            AppLogger.Warn("Repository index registry is invalid JSON. Rebuilding from discovered state.");
-            return new RepositoryRegistryDocument();
-        }
-
-        parsed.IndexKeys = (parsed.IndexKeys ?? [])
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim('/'))
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        return parsed;
-    }
-
-    private static RepositoryIndexDocument ParseOrCreateRepositoryIndex(string? json, string mode, string repositoryIdentity)
-    {
-        RepositoryIndexDocument document;
-
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            document = new RepositoryIndexDocument();
-        }
-        else if (!StorageIndexDocuments.TryDeserialize<RepositoryIndexDocument>(json, out var parsed) || parsed is null)
-        {
-            AppLogger.Warn(
-                "Repository index is invalid JSON. Rebuilding index for repository={RepositoryIdentity}.",
-                repositoryIdentity);
-            document = new RepositoryIndexDocument();
-        }
-        else
-        {
-            document = parsed;
-        }
-
-        document.Mode = mode;
-        document.RepositoryIdentity = repositoryIdentity;
-        document.Snapshots ??= [];
-        return document;
-    }
-
-    private static async Task<RepositoryRegistryDocument> LoadRepositoryRegistryAsync(
-        IObjectStorageService objectStorageService,
-        string repositoryRegistryObjectKey,
-        CancellationToken cancellationToken)
-    {
-        var registryContent = await objectStorageService.GetTextIfExistsAsync(repositoryRegistryObjectKey, cancellationToken);
-        return ParseOrCreateRepositoryRegistry(registryContent);
     }
 
     private string BuildLocalPathFromPrefix(string repositoryPrefix)
@@ -393,15 +269,5 @@ public sealed class RepositorySyncService
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes).ToLowerInvariant();
-    }
-
-    private static string BuildArchiveObjectName(DateTimeOffset timestamp)
-    {
-        return $"{timestamp.ToUnixTimeSeconds()}{ArchiveObjectNameSuffix}";
-    }
-
-    private static bool IsValidSnapshot(RepositorySnapshotDocument snapshot)
-    {
-        return !string.IsNullOrWhiteSpace(snapshot.RootPrefix) && snapshot.TimestampUnixSeconds > 0;
     }
 }
