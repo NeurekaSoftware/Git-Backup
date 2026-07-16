@@ -104,6 +104,7 @@ public sealed class SettingsLoader
             repository.Lfs ??= true;
             repository.Cache ??= true;
             repository.IncludeStarred ??= false;
+            repository.IncludeSnippets ??= false;
             repository.Mode = repository.Mode?.Trim().ToLowerInvariant();
             repository.Provider = repository.Provider?.Trim().ToLowerInvariant();
             repository.Urls = repository.Urls?
@@ -290,6 +291,11 @@ public sealed class SettingsLoader
         if (repository.IncludeStarred == true)
         {
             errors.Add($"repositories[{index}].includeStarred is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeSnippets == true)
+        {
+            errors.Add($"repositories[{index}].includeSnippets is not allowed when mode is url.");
         }
 
         if (string.IsNullOrWhiteSpace(repository.Credential))

@@ -30,4 +30,7 @@ public sealed class RepositoryJobConfig
 
     [YamlMember(Alias = "includeStarred")]
     public bool? IncludeStarred { get; set; }
+
+    [YamlMember(Alias = "includeSnippets")]
+    public bool? IncludeSnippets { get; set; }
 }

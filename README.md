@@ -35,7 +35,8 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | PR/MR comments | ❌ | ❌ | ❌ | ❌ |
 | Releases | ❌ | ❌ | ❌ | ❌ |
 | Release artifacts | ❌ | ❌ | ❌ | ❌ |
-| Gists / Snippets | ❌ | ❌ | ❌ | ❌ |
+| Gists / Snippets | ✅ | ✅ | ❌ | ❌ |
+| Starred gists / snippets | ✅ | ❌ | ❌ | ❌ |
 
 ### Protocol Support
 
@@ -100,6 +101,7 @@ repositories:
     provider: github
     credential: github
     includeStarred: true
+    includeSnippets: true
   - mode: provider
     provider: gitlab
     credential: gitlab
@@ -126,6 +128,7 @@ Each entry under `repositories` accepts:
 | `provider` | Forge to discover: `github`, `gitlab`, or `forgejo`. Provider mode. | *required (provider)* |
 | `baseUrl` | Base URL of a self-hosted forge instance. Provider mode. | forge's public URL |
 | `includeStarred` | Also back up repositories the account has starred. Provider mode. | `false` |
+| `includeSnippets` | Also back up your GitHub gists and GitLab snippets. GitHub also backs up starred gists when `includeStarred` is on; GitLab has no starred snippets. Provider mode. | `false` |
 | `url` | A single repository URL, or a list of repository URLs. URL mode. | *required (url)* |
 | `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required (provider)* |
 | `lfs` | Back up Git LFS objects. | `true` |
@@ -133,3 +136,6 @@ Each entry under `repositories` accepts:
 | `enabled` | Set `false` to skip the job. | `true` |
 
 Local mirrors for repositories that are removed from the config (or disabled) are cleaned off disk automatically on the next run.
+
+> [!NOTE]
+> Backing up GitHub gists (`includeSnippets`) requires a **classic** personal access token with the `gist` scope — fine-grained tokens cannot read gists.

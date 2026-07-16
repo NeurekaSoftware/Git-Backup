@@ -5,6 +5,7 @@ public static class StorageKeyBuilder
     public const string ArchiveObjectNameSuffix = "_repo.tar.gz";
     public const string RepositoryMetadataObjectName = "metadata.json";
     public const string RepositoriesPrefix = "repositories/";
+    public const string SnippetsPrefix = "snippets/";
 
     public static string BuildProviderRepositoryPrefix(string provider, RepositoryPathInfo repository)
     {
@@ -16,6 +17,23 @@ public static class StorageKeyBuilder
         };
 
         segments.AddRange(repository.Hierarchy);
+        return string.Join('/', segments);
+    }
+
+    /// <summary>
+    /// Builds the prefix for a standalone gist or personal snippet, which have no owner/repo
+    /// hierarchy: <c>snippets/provider/{provider}/{identifier}</c>.
+    /// </summary>
+    public static string BuildSnippetResourcePrefix(string provider, string identifier)
+    {
+        var segments = new List<string>
+        {
+            "snippets",
+            "provider",
+            provider.Trim().ToLowerInvariant(),
+            identifier.Trim()
+        };
+
         return string.Join('/', segments);
     }
 

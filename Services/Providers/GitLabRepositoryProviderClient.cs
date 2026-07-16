@@ -1,3 +1,4 @@
+using System.Text.Json;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 
@@ -25,28 +26,42 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
         client.DefaultRequestHeaders.Remove("Authorization");
         client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey.Trim());
 
-        var owned = await CollectAsync(
+        var results = new List<DiscoveredRepository>();
+
+        results.AddRange(await CollectAsync(
             client,
             page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
-            cancellationToken);
+            MapProject,
+            cancellationToken));
 
-        if (repository.IncludeStarred != true)
+        if (repository.IncludeStarred == true)
         {
-            return owned;
+            AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
+            results.AddRange(await CollectAsync(
+                client,
+                page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
+                MapProject,
+                cancellationToken));
         }
 
-        AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
-        var starred = await CollectAsync(
-            client,
-            page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
-            cancellationToken);
+        if (repository.IncludeSnippets == true)
+        {
+            // GitLab has no "starred snippets" endpoint, so includeStarred adds nothing here.
+            AppLogger.Debug("Including snippets. provider={Provider}.", Provider);
+            results.AddRange(await CollectAsync(
+                client,
+                page => $"{baseUrl}/snippets?per_page=100&page={page}",
+                MapSnippet,
+                cancellationToken));
+        }
 
-        return DistinctByCloneUrl(owned.Concat(starred));
+        return DistinctByCloneUrl(results);
     }
 
     private static async Task<List<DiscoveredRepository>> CollectAsync(
         HttpClient client,
         Func<int, string> buildRequestUri,
+        Func<JsonElement, DiscoveredRepository?> mapItem,
         CancellationToken cancellationToken)
     {
         var repositories = new List<DiscoveredRepository>();
@@ -59,24 +74,18 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
             response.EnsureSuccessStatusCode();
 
             using var document = await ReadJsonDocumentAsync(response, cancellationToken);
-            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
             {
                 break;
             }
 
             foreach (var item in document.RootElement.EnumerateArray())
             {
-                var cloneUrl = GetStringOrNull(item, "http_url_to_repo");
-                if (string.IsNullOrWhiteSpace(cloneUrl))
+                var mapped = mapItem(item);
+                if (mapped is not null)
                 {
-                    continue;
+                    repositories.Add(mapped);
                 }
-
-                repositories.Add(new DiscoveredRepository
-                {
-                    CloneUrl = cloneUrl,
-                    WebUrl = GetStringOrNull(item, "web_url")
-                });
             }
 
             if (!response.Headers.TryGetValues("X-Next-Page", out var values))
@@ -94,5 +103,73 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
         }
 
         return repositories;
+    }
+
+    private static DiscoveredRepository? MapProject(JsonElement item)
+    {
+        var cloneUrl = GetStringOrNull(item, "http_url_to_repo");
+        if (string.IsNullOrWhiteSpace(cloneUrl))
+        {
+            return null;
+        }
+
+        return new DiscoveredRepository
+        {
+            CloneUrl = cloneUrl,
+            WebUrl = GetStringOrNull(item, "web_url")
+        };
+    }
+
+    private static DiscoveredRepository? MapSnippet(JsonElement item)
+    {
+        // The list endpoint (GET /snippets) omits http_url_to_repo, so clone via the web URL + ".git".
+        var id = GetSnippetId(item);
+        var webUrl = GetStringOrNull(item, "web_url");
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(webUrl))
+        {
+            return null;
+        }
+
+        // A non-null project_id marks a project snippet, which nests under its owning project.
+        var isProjectSnippet = item.TryGetProperty("project_id", out var projectId)
+            && projectId.ValueKind == JsonValueKind.Number;
+
+        return new DiscoveredRepository
+        {
+            CloneUrl = $"{webUrl}.git",
+            WebUrl = webUrl,
+            Kind = DiscoveredRepositoryKind.Snippet,
+            Identifier = id,
+            ParentUrl = isProjectSnippet ? TrimSnippetSuffix(webUrl) : null
+        };
+    }
+
+    private static string? GetSnippetId(JsonElement item)
+    {
+        if (!item.TryGetProperty("id", out var idElement))
+        {
+            return null;
+        }
+
+        return idElement.ValueKind switch
+        {
+            JsonValueKind.Number => idElement.GetRawText(),
+            JsonValueKind.String => idElement.GetString(),
+            _ => null
+        };
+    }
+
+    private static string? TrimSnippetSuffix(string webUrl)
+    {
+        // Project snippet web URLs look like https://host/<namespace>/<project>/-/snippets/<id>
+        // (or legacy https://host/<namespace>/<project>/snippets/<id>). Strip the marker to get the
+        // owning project's URL.
+        var marker = webUrl.IndexOf("/-/snippets/", StringComparison.Ordinal);
+        if (marker < 0)
+        {
+            marker = webUrl.LastIndexOf("/snippets/", StringComparison.Ordinal);
+        }
+
+        return marker > 0 ? webUrl[..marker] : null;
     }
 }

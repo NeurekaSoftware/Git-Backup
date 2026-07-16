@@ -1,3 +1,4 @@
+using System.Text.Json;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 
@@ -22,30 +23,54 @@ public sealed class GitHubRepositoryProviderClient : ProviderHttpClientBase, IRe
         var baseUrl = ResolveGitHubApiBaseUrl(repository.BaseUrl);
         using var client = CreateClient(credential.ApiKey);
 
-        var owned = await CollectAsync(
+        var results = new List<DiscoveredRepository>();
+
+        results.AddRange(await CollectAsync(
             client,
             page => $"{baseUrl}/user/repos?affiliation=owner&visibility=all&per_page=100&page={page}",
-            cancellationToken);
+            MapRepository,
+            cancellationToken));
 
-        if (repository.IncludeStarred != true)
+        if (repository.IncludeStarred == true)
         {
-            return owned;
+            AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
+            results.AddRange(await CollectAsync(
+                client,
+                page => $"{baseUrl}/user/starred?per_page=100&page={page}",
+                MapRepository,
+                cancellationToken));
         }
 
-        AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
-        var starred = await CollectAsync(
-            client,
-            page => $"{baseUrl}/user/starred?per_page=100&page={page}",
-            cancellationToken);
+        if (repository.IncludeSnippets == true)
+        {
+            AppLogger.Debug("Including gists. provider={Provider}.", Provider);
+            results.AddRange(await CollectAsync(
+                client,
+                page => $"{baseUrl}/gists?per_page=100&page={page}",
+                MapGist,
+                cancellationToken));
 
-        return DistinctByCloneUrl(owned.Concat(starred));
+            if (repository.IncludeStarred == true)
+            {
+                AppLogger.Debug("Including starred gists. provider={Provider}.", Provider);
+                results.AddRange(await CollectAsync(
+                    client,
+                    page => $"{baseUrl}/gists/starred?per_page=100&page={page}",
+                    MapGist,
+                    cancellationToken));
+            }
+        }
+
+        return DistinctByCloneUrl(results);
     }
 
     private static async Task<List<DiscoveredRepository>> CollectAsync(
         HttpClient client,
         Func<int, string> buildRequestUri,
+        Func<JsonElement, DiscoveredRepository?> mapItem,
         CancellationToken cancellationToken)
     {
+        const int pageSize = 100;
         var repositories = new List<DiscoveredRepository>();
 
         for (var page = 1; ; page++)
@@ -55,35 +80,62 @@ public sealed class GitHubRepositoryProviderClient : ProviderHttpClientBase, IRe
             response.EnsureSuccessStatusCode();
 
             using var document = await ReadJsonDocumentAsync(response, cancellationToken);
-            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
             {
                 break;
             }
 
-            var count = 0;
+            var itemCount = 0;
             foreach (var item in document.RootElement.EnumerateArray())
             {
-                var cloneUrl = GetStringOrNull(item, "clone_url");
-                if (string.IsNullOrWhiteSpace(cloneUrl))
+                itemCount++;
+                var mapped = mapItem(item);
+                if (mapped is not null)
                 {
-                    continue;
+                    repositories.Add(mapped);
                 }
-
-                repositories.Add(new DiscoveredRepository
-                {
-                    CloneUrl = cloneUrl,
-                    WebUrl = GetStringOrNull(item, "html_url")
-                });
-                count++;
             }
 
-            if (count < 100)
+            if (itemCount < pageSize)
             {
                 break;
             }
         }
 
         return repositories;
+    }
+
+    private static DiscoveredRepository? MapRepository(JsonElement item)
+    {
+        var cloneUrl = GetStringOrNull(item, "clone_url");
+        if (string.IsNullOrWhiteSpace(cloneUrl))
+        {
+            return null;
+        }
+
+        return new DiscoveredRepository
+        {
+            CloneUrl = cloneUrl,
+            WebUrl = GetStringOrNull(item, "html_url")
+        };
+    }
+
+    private static DiscoveredRepository? MapGist(JsonElement item)
+    {
+        var cloneUrl = GetStringOrNull(item, "git_pull_url");
+        var id = GetStringOrNull(item, "id");
+        if (string.IsNullOrWhiteSpace(cloneUrl) || string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        return new DiscoveredRepository
+        {
+            CloneUrl = cloneUrl,
+            WebUrl = GetStringOrNull(item, "html_url"),
+            Kind = DiscoveredRepositoryKind.Gist,
+            Identifier = id
+        };
     }
 
     private static string ResolveGitHubApiBaseUrl(string? configuredBaseUrl)

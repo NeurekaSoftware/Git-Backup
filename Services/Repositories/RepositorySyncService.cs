@@ -160,12 +160,11 @@ public sealed class RepositorySyncService
                 continue;
             }
 
-            var pathInfo = RepositoryPathParser.Parse(discoveredRepository.CloneUrl);
-            var repositoryPrefix = StorageKeyBuilder.BuildProviderRepositoryPrefix(repository.Provider, pathInfo);
-            expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
-
             try
             {
+                var repositoryPrefix = ResolveProviderPrefix(repository.Provider, discoveredRepository);
+                expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
+
                 await SyncRepositorySnapshotAsync(
                     mode: RepositoryJobModes.Provider,
                     repositoryUrl: discoveredRepository.CloneUrl,
@@ -190,6 +189,30 @@ public sealed class RepositorySyncService
         }
 
         return (syncedRepositories, true);
+    }
+
+    // Resolves the storage prefix for a discovered resource. Repositories use their clone URL's
+    // owner/repo hierarchy; gists and personal snippets have no such hierarchy and are keyed by id
+    // under the snippets/ root; project snippets nest under their owning project.
+    private static string ResolveProviderPrefix(string provider, DiscoveredRepository discoveredRepository)
+    {
+        switch (discoveredRepository.Kind)
+        {
+            case DiscoveredRepositoryKind.Gist:
+                return StorageKeyBuilder.BuildSnippetResourcePrefix(provider, discoveredRepository.Identifier!);
+
+            case DiscoveredRepositoryKind.Snippet when string.IsNullOrWhiteSpace(discoveredRepository.ParentUrl):
+                return StorageKeyBuilder.BuildSnippetResourcePrefix(provider, discoveredRepository.Identifier!);
+
+            case DiscoveredRepositoryKind.Snippet:
+                var projectInfo = RepositoryPathParser.Parse(discoveredRepository.ParentUrl!);
+                var projectPrefix = StorageKeyBuilder.BuildProviderRepositoryPrefix(provider, projectInfo);
+                return $"{projectPrefix}/snippets/{discoveredRepository.Identifier}";
+
+            default:
+                var pathInfo = RepositoryPathParser.Parse(discoveredRepository.CloneUrl);
+                return StorageKeyBuilder.BuildProviderRepositoryPrefix(provider, pathInfo);
+        }
     }
 
     private async Task<(int Synced, bool Complete)> RunUrlModeAsync(

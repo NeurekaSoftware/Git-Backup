@@ -71,7 +71,11 @@ public sealed class RepositoryRetentionService
         int retentionMinimum,
         CancellationToken cancellationToken)
     {
-        var allKeys = await objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.RepositoriesPrefix, cancellationToken);
+        // Snapshots live under two roots: repositories/ (repos and owned project snippets) and
+        // snippets/ (gists and personal snippets). Retention treats both the same way.
+        var repositoryKeys = await objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.RepositoriesPrefix, cancellationToken);
+        var snippetKeys = await objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.SnippetsPrefix, cancellationToken);
+        var allKeys = repositoryKeys.Concat(snippetKeys).ToList();
 
         var snapshotsByRepository = new Dictionary<string, List<(string ObjectKey, long TimestampUnixSeconds)>>(StringComparer.Ordinal);
         foreach (var objectKey in allKeys)
