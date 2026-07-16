@@ -17,9 +17,9 @@ if [ -n "$PUID" ] && [ "$PUID" != "0" ] && [ -n "$PGID" ] && [ "$PGID" != "0" ];
 
   groupadd -g "$PGID" app
   useradd -u "$PUID" -g app -M app
-  chown -R app:app /app
+  chown -R app:app /app 2>/dev/null || true
   exec gosu app "$@"
 fi
 
-chown -R 0:0 /app
+chown -R 0:0 /app 2>/dev/null || true
 exec "$@"

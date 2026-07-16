@@ -47,39 +47,23 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 
 ### Docker Compose
 
-```yaml
-services:
-  git-backup:
-    image: registry.neureka.dev/git/git-backup:edge
-    container_name: git-backup
-    env_file:
-      - .env
-    networks:
-      - git-backup
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-
-networks:
-  git-backup:
-    name: git-backup
-```
-
-Copy the environment template before starting — `compose` reads `.env`, so a
-missing file stops `docker compose up`:
+Download the compose file and the environment template (saved as `.env`):
 
 ```sh
-cp .env.example .env
+curl -fsSLO https://code.neureka.dev/git/backup/-/raw/main/compose.yaml
+curl -fsSL -o .env https://code.neureka.dev/git/backup/-/raw/main/.env.example
 ```
 
-`.env` carries only runtime settings: `PUID`/`PGID` (the host user/group the
-container drops to; set both to `0` or leave them empty to run as root) and `TZ`
-(the time zone for log timestamps — backup schedules always run in UTC). All
-application configuration lives in `settings.yaml` instead.
+Create your `settings.yaml` next to `compose.yaml` (see [settings.yaml](#settingsyaml)),
+then start the stack:
+
+```sh
+docker compose up -d
+```
 
 ### settings.yaml
 
-Place `settings.yaml` in the mounted `./data` directory (`./data/settings.yaml`).
+Place `settings.yaml` next to `compose.yaml`; `compose` binds it read-only into the container.
 
 > [!TIP]
 > These settings support hot reload so you don't have to restart your container after making changes.

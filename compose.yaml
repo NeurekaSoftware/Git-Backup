@@ -7,7 +7,7 @@ services:
     networks:
       - git-backup
     volumes:
-      - ./data:/app/data
+      - ./settings.yaml:/app/data/settings.yaml:ro
     restart: unless-stopped
 
 networks:
