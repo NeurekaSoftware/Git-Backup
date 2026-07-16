@@ -1,0 +1,21 @@
+namespace GitBackup.Services.Providers;
+
+public sealed class RepositoryProviderClientFactory
+{
+    private readonly Dictionary<string, IRepositoryProviderClient> _clients;
+
+    public RepositoryProviderClientFactory(IEnumerable<IRepositoryProviderClient> clients)
+    {
+        _clients = clients.ToDictionary(client => client.Provider, client => client, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public IRepositoryProviderClient Resolve(string provider)
+    {
+        if (_clients.TryGetValue(provider, out var client))
+        {
+            return client;
+        }
+
+        throw new InvalidOperationException($"No provider client registered for '{provider}'.");
+    }
+}

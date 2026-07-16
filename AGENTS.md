@@ -1,5 +1,5 @@
 # Development and Release Rules
-- Run `dotnet build GitProtect.slnx` and confirm a successful build before every commit.
+- Run `dotnet build GitBackup.slnx` and confirm a successful build before every commit.
 - Use Conventional Commits for all commit messages (for example: `feat: ...`, `fix: ...`, `chore: ...`).
 - Use Semantic Versioning (`MAJOR.MINOR.PATCH`) for all versioning and release tags.
 

@@ -1,4 +1,4 @@
-# Git Protect
+# Git Backup
 
 Automatically back up repositories from major Git forges to your S3-compatible object storage.
 
@@ -49,9 +49,9 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 
 ```yaml
 services:
-  git-protect:
-    image: ghcr.io/neurekasoftware/git-protect:edge
-    container_name: git-protect
+  git-backup:
+    image: registry.neureka.dev/git/git-backup:edge
+    container_name: git-backup
     volumes:
       - ./data:/app/data
     restart: unless-stopped
@@ -69,7 +69,7 @@ logging:
 storage:
   endpoint: https://accountid.r2.cloudflarestorage.com
   region: auto
-  bucket: git-protect
+  bucket: git-backup
   accessKeyId: accessKeyId
   secretAccessKey: secretAccessKey
   forcePathStyle: false
@@ -107,8 +107,8 @@ repositories:
     lfs: false
     enabled: true
   - mode: url
-    url: https://github.com/NeurekaSoftware/Git-Protect
-    credential: github
+    url: https://code.neureka.dev/git/git-backup
+    credential: gitlab
     lfs: true
     enabled: true
   - mode: url
