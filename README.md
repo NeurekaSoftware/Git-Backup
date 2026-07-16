@@ -27,16 +27,18 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | Capability | GitHub | GitLab | Forgejo | URL mode |
 |---|---|---|---|---|
 | Git repositories | ✅ | ✅ | ✅ | ✅ |
-| Starred repositories | ✅ | ✅ | ✅ | ❌ |
+| Starred repositories | ✅ | ✅ | ✅ | ➖ |
 | Git LFS objects | ✅ | ✅ | ✅ | ✅ |
-| Issues | ❌ | ❌ | ❌ | ❌ |
-| Issue comments | ❌ | ❌ | ❌ | ❌ |
-| Pull requests / merge requests | ❌ | ❌ | ❌ | ❌ |
-| PR/MR comments | ❌ | ❌ | ❌ | ❌ |
-| Releases | ❌ | ❌ | ❌ | ❌ |
-| Release artifacts | ❌ | ❌ | ❌ | ❌ |
-| Gists / Snippets | ✅ | ✅ | ❌ | ❌ |
-| Starred gists / snippets | ✅ | ❌ | ❌ | ❌ |
+| Issues | ❌ | ❌ | ❌ | ➖ |
+| Issue comments | ❌ | ❌ | ❌ | ➖ |
+| Pull requests / merge requests | ❌ | ❌ | ❌ | ➖ |
+| PR/MR comments | ❌ | ❌ | ❌ | ➖ |
+| Releases | ❌ | ❌ | ❌ | ➖ |
+| Release artifacts | ❌ | ❌ | ❌ | ➖ |
+| Gists / Snippets | ✅ | ✅ | ➖ | ➖ |
+| Starred gists / snippets | ✅ | ➖ | ➖ | ➖ |
+
+✅ supported · ❌ on the roadmap · ➖ not applicable
 
 ### Protocol Support
 
