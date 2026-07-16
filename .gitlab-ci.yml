@@ -1,0 +1,17 @@
+stages:
+  - build
+
+include:
+  - component: $CI_SERVER_FQDN/components/docker/build@1.0.0
+    inputs:
+      job-name: docker-edge
+      tag: edge
+      build-args: >-
+        --build-arg BUILD_CONFIGURATION=Release
+        --build-arg GIT_TAG=edge
+        --build-arg GIT_HASH=$CI_COMMIT_SHA
+
+# The component ships no rules, so scope its job to main-branch pushes.
+docker-edge:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
