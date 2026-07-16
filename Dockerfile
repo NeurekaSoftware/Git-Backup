@@ -4,13 +4,11 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
-COPY GitBackup/GitBackup.csproj GitBackup/
-COPY GitBackup.CLI/GitBackup.CLI.csproj GitBackup.CLI/
-RUN dotnet restore GitBackup.CLI/GitBackup.CLI.csproj
+COPY GitBackup.csproj ./
+RUN dotnet restore GitBackup.csproj
 
-COPY GitBackup/ GitBackup/
-COPY GitBackup.CLI/ GitBackup.CLI/
-RUN dotnet publish GitBackup.CLI/GitBackup.CLI.csproj \
+COPY . ./
+RUN dotnet publish GitBackup.csproj \
     -c ${BUILD_CONFIGURATION} \
     -o /app/publish \
     --no-restore \
@@ -30,4 +28,4 @@ RUN mkdir -p /app/bin /app/data
 WORKDIR /app/bin
 COPY --from=build /app/publish/ ./
 
-ENTRYPOINT ["dotnet", "GitBackup.CLI.dll"]
+ENTRYPOINT ["dotnet", "GitBackup.dll"]

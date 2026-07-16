@@ -7,7 +7,7 @@ using GitBackup.Services.Repositories;
 using GitBackup.Services.Scheduling;
 using GitBackup.Services.Storage;
 
-namespace GitBackup.CLI;
+namespace GitBackup;
 
 class Program
 {
@@ -151,8 +151,7 @@ class Program
 
         return
         [
-            Path.Combine(Environment.CurrentDirectory, "settings.yaml"),
-            Path.Combine(Environment.CurrentDirectory, "GitBackup.CLI", "settings.yaml")
+            Path.Combine(Environment.CurrentDirectory, "settings.yaml")
         ];
     }
 

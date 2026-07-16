@@ -1,4 +1,3 @@
 <Solution>
-  <Project Path="GitBackup/GitBackup.csproj" />
-  <Project Path="GitBackup.CLI/GitBackup.CLI.csproj" />
+  <Project Path="GitBackup.csproj" />
 </Solution>
