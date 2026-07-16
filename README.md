@@ -26,9 +26,9 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 
 | Capability | GitHub | GitLab | Forgejo | URL mode |
 |---|---|---|---|---|
-| Git repository data | ✅ | ✅ | ✅ | ✅ |
-| Git LFS objects | ✅ | ✅ | ✅ | ✅ |
+| Git repositories | ✅ | ✅ | ✅ | ✅ |
 | Starred repositories | ✅ | ✅ | ✅ | ❌ |
+| Git LFS objects | ✅ | ✅ | ✅ | ✅ |
 | Issues | ❌ | ❌ | ❌ | ❌ |
 | Issue comments | ❌ | ❌ | ❌ | ❌ |
 | Pull requests / merge requests | ❌ | ❌ | ❌ | ❌ |
