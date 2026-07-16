@@ -52,12 +52,34 @@ services:
   git-backup:
     image: registry.neureka.dev/git/git-backup:edge
     container_name: git-backup
+    env_file:
+      - .env
+    networks:
+      - git-backup
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+
+networks:
+  git-backup:
+    name: git-backup
 ```
 
+Copy the environment template before starting — `compose` reads `.env`, so a
+missing file stops `docker compose up`:
+
+```sh
+cp .env.example .env
+```
+
+`.env` carries only runtime settings: `PUID`/`PGID` (the host user/group the
+container drops to; set both to `0` or leave them empty to run as root) and `TZ`
+(the time zone for log timestamps — backup schedules always run in UTC). All
+application configuration lives in `settings.yaml` instead.
+
 ### settings.yaml
+
+Place `settings.yaml` in the mounted `./data` directory (`./data/settings.yaml`).
 
 > [!TIP]
 > These settings support hot reload so you don't have to restart your container after making changes.

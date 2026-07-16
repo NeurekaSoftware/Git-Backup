@@ -6,6 +6,7 @@ include:
     inputs:
       job-name: docker-edge
       tag: edge
+      platforms: linux/amd64,linux/arm64
       build-args: >-
         --build-arg BUILD_CONFIGURATION=Release
         --build-arg GIT_TAG=edge

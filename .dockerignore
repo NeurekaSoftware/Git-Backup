@@ -1,5 +1,9 @@
 .git
+.gitattributes
 .gitlab-ci.yml
+.env
+settings.yaml
+compose.yaml
 *.md
 **/bin
 **/obj
