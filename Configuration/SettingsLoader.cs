@@ -1,4 +1,5 @@
 using GitBackup.Configuration.Models;
+using GitBackup.Configuration.Yaml;
 using GitBackup.Runtime;
 using GitBackup.Services.Scheduling;
 using YamlDotNet.Core;
@@ -30,6 +31,7 @@ public sealed class SettingsLoader
     {
         _deserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
+            .WithTypeConverter(new ScalarOrSequenceConverter())
             .IgnoreUnmatchedProperties()
             .Build();
     }
@@ -103,6 +105,11 @@ public sealed class SettingsLoader
             repository.Cache ??= true;
             repository.Mode = repository.Mode?.Trim().ToLowerInvariant();
             repository.Provider = repository.Provider?.Trim().ToLowerInvariant();
+            repository.Urls = repository.Urls?
+                .Select(url => url?.Trim())
+                .Where(url => !string.IsNullOrWhiteSpace(url))
+                .Select(url => url!)
+                .ToList();
         }
     }
 
@@ -237,7 +244,7 @@ public sealed class SettingsLoader
             errors.Add($"repositories[{index}].credential references unknown credential '{repository.Credential}'.");
         }
 
-        if (!string.IsNullOrWhiteSpace(repository.Url))
+        if (repository.Urls is { Count: > 0 })
         {
             errors.Add($"repositories[{index}].url is not allowed when mode is provider.");
         }
@@ -254,13 +261,19 @@ public sealed class SettingsLoader
         int index,
         List<string> errors)
     {
-        if (string.IsNullOrWhiteSpace(repository.Url))
+        if (repository.Urls is not { Count: > 0 })
         {
             errors.Add($"repositories[{index}].url is required when mode is url.");
         }
-        else if (!IsValidHttpUrl(repository.Url))
+        else
         {
-            errors.Add($"repositories[{index}].url must be an absolute http or https URL.");
+            for (var j = 0; j < repository.Urls.Count; j++)
+            {
+                if (!IsValidHttpUrl(repository.Urls[j]))
+                {
+                    errors.Add($"repositories[{index}].url[{j}] must be an absolute http or https URL.");
+                }
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(repository.Provider))

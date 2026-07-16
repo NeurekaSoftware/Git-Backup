@@ -11,7 +11,7 @@ public sealed class RepositoryJobConfig
     public string? Provider { get; set; }
 
     [YamlMember(Alias = "url")]
-    public string? Url { get; set; }
+    public List<string>? Urls { get; set; }
 
     [YamlMember(Alias = "credential")]
     public string? Credential { get; set; }

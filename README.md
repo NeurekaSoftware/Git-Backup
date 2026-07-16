@@ -12,7 +12,7 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | Mode | Status | Description |
 |---|---|---|
 | `provider` | ✅ | Back up all repositories for an account from supported Git forges. |
-| `url` | ✅ | Back up any repository via direct URL, without forge API discovery. |
+| `url` | ✅ | Back up one or more repositories via direct URL, without forge API discovery. |
 
 ### Supported Providers
 
@@ -95,7 +95,6 @@ credentials:
     apiKey: forgejoToken
 
 repositories:
-  # Defaults: cache on (keep a local mirror and git-fetch each run), LFS on, enabled.
   - mode: provider
     provider: github
     credential: github
@@ -107,13 +106,10 @@ repositories:
     credential: forgejo
     baseUrl: https://codeberg.org
   - mode: url
-    url: https://code.neureka.dev/git/backup
     credential: gitlab
-  # Very large repo: clone fresh each run and delete the local mirror after a
-  # successful upload instead of keeping it cached on disk.
-  - mode: url
-    url: https://gitlab.com/gitlab-org/gitlab
-    cache: false
+    url:
+      - https://code.neureka.dev/git/backup
+      - https://code.neureka.dev/git/website
 
 schedule:
   repositories:
@@ -122,12 +118,15 @@ schedule:
 
 Each entry under `repositories` accepts:
 
-- `mode` — `provider` (discover all repositories for an account) or `url` (a single repository).
-- `provider` / `baseUrl` — the forge (`github`, `gitlab`, `forgejo`) and, for self-hosted instances, its base URL (provider mode).
-- `url` — the repository URL (url mode).
-- `credential` — the credential key used to authenticate.
-- `lfs` — back up Git LFS objects. **Default `true`.**
-- `cache` — keep a local mirror and `git fetch` it each run (fast subsequent syncs). Set `false` to clone fresh each run and delete the local copy right after a successful upload, bounding local disk to one repository at a time. **Default `true`.**
-- `enabled` — set `false` to skip the job. **Default `true`.**
+| Option | Description | Default |
+|---|---|---|
+| `mode` | `provider` (discover all repositories for an account) or `url` (specific repositories). | *required* |
+| `provider` | Forge to discover: `github`, `gitlab`, or `forgejo`. Provider mode. | *required (provider)* |
+| `baseUrl` | Base URL of a self-hosted forge instance. Provider mode. | forge's public URL |
+| `url` | A single repository URL, or a list of repository URLs. URL mode. | *required (url)* |
+| `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required (provider)* |
+| `lfs` | Back up Git LFS objects. | `true` |
+| `cache` | Keep a local mirror and `git fetch` it each run for fast subsequent syncs. Set `false` to clone fresh each run and delete the local copy after a successful upload, bounding local disk to one repository at a time. | `true` |
+| `enabled` | Set `false` to skip the job. | `true` |
 
 Local mirrors for repositories that are removed from the config (or disabled) are cleaned off disk automatically on the next run.
