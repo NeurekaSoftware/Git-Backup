@@ -69,7 +69,7 @@ public sealed class ScheduledJobRunner
             }
 
             var now = DateTimeOffset.UtcNow;
-            var nextOccurrence = schedule.GetNextOccurrence(now.AddMilliseconds(1), TimeZoneInfo.Utc);
+            var nextOccurrence = schedule.GetNextOccurrence(now.AddMilliseconds(1), TimeZoneInfo.Local);
 
             if (nextOccurrence is null)
             {
