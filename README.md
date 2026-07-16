@@ -38,7 +38,7 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | Gists / Snippets | ✅ | ✅ | ➖ | ➖ |
 | Starred gists / snippets | ✅ | ➖ | ➖ | ➖ |
 
-✅ supported · 🚧 on the roadmap · ➖ not applicable
+✅ supported · 🚧 on the roadmap · ❌ unsupported · ➖ not applicable
 
 ### Protocol Support
 
