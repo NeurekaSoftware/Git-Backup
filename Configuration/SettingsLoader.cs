@@ -99,7 +99,8 @@ public sealed class SettingsLoader
             }
 
             repository.Enabled ??= true;
-            repository.Lfs ??= false;
+            repository.Lfs ??= true;
+            repository.Cache ??= true;
             repository.Mode = repository.Mode?.Trim().ToLowerInvariant();
             repository.Provider = repository.Provider?.Trim().ToLowerInvariant();
         }

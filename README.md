@@ -95,33 +95,39 @@ credentials:
     apiKey: forgejoToken
 
 repositories:
+  # Defaults: cache on (keep a local mirror and git-fetch each run), LFS on, enabled.
   - mode: provider
     provider: github
     credential: github
-    lfs: false
-    enabled: true
   - mode: provider
     provider: gitlab
     credential: gitlab
-    lfs: false
-    enabled: true
   - mode: provider
     provider: forgejo
     credential: forgejo
     baseUrl: https://codeberg.org
-    lfs: false
-    enabled: true
   - mode: url
-    url: https://code.neureka.dev/git/git-backup
+    url: https://code.neureka.dev/git/backup
     credential: gitlab
-    lfs: true
-    enabled: true
+  # Very large repo: clone fresh each run and delete the local mirror after a
+  # successful upload instead of keeping it cached on disk.
   - mode: url
     url: https://gitlab.com/gitlab-org/gitlab
-    lfs: false
-    enabled: true
+    cache: false
 
 schedule:
   repositories:
     cron: "0 */6 * * *"
 ```
+
+Each entry under `repositories` accepts:
+
+- `mode` — `provider` (discover all repositories for an account) or `url` (a single repository).
+- `provider` / `baseUrl` — the forge (`github`, `gitlab`, `forgejo`) and, for self-hosted instances, its base URL (provider mode).
+- `url` — the repository URL (url mode).
+- `credential` — the credential key used to authenticate.
+- `lfs` — back up Git LFS objects. **Default `true`.**
+- `cache` — keep a local mirror and `git fetch` it each run (fast subsequent syncs). Set `false` to clone fresh each run and delete the local copy right after a successful upload, bounding local disk to one repository at a time. **Default `true`.**
+- `enabled` — set `false` to skip the job. **Default `true`.**
+
+Local mirrors for repositories that are removed from the config (or disabled) are cleaned off disk automatically on the next run.

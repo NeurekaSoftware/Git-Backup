@@ -22,6 +22,9 @@ public sealed class RepositoryJobConfig
     [YamlMember(Alias = "lfs")]
     public bool? Lfs { get; set; }
 
+    [YamlMember(Alias = "cache")]
+    public bool? Cache { get; set; }
+
     [YamlMember(Alias = "enabled")]
     public bool? Enabled { get; set; }
 }
