@@ -199,7 +199,7 @@ public sealed class RepositorySyncService
         HashSet<string> expectedMirrorDirectories,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(repository.Url))
+        if (repository.Urls is not { Count: > 0 })
         {
             AppLogger.Warn("Skipping URL repository job because url is missing.");
             return (0, false);
@@ -211,8 +211,7 @@ public sealed class RepositorySyncService
             if (!settings.Credentials.TryGetValue(repository.Credential, out var credentialConfig))
             {
                 AppLogger.Warn(
-                    "Skipping URL repository job because credential is missing. repository={RepositoryUrl}, credential={Credential}.",
-                    repository.Url,
+                    "Skipping URL repository job because credential is missing. credential={Credential}.",
                     repository.Credential);
                 return (0, false);
             }
@@ -220,33 +219,50 @@ public sealed class RepositorySyncService
             gitCredential = CredentialResolver.ResolveGitCredential(credentialConfig);
         }
 
-        var pathInfo = RepositoryPathParser.Parse(repository.Url);
-        var repositoryPrefix = StorageKeyBuilder.BuildUrlRepositoryPrefix(pathInfo);
-        expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
+        var cache = repository.Cache != false;
+        var includeLfs = repository.Lfs != false;
+        var syncedRepositories = 0;
 
-        try
+        foreach (var url in repository.Urls)
         {
-            await SyncRepositorySnapshotAsync(
-                mode: RepositoryJobModes.Url,
-                repositoryUrl: repository.Url,
-                repositoryPrefix,
-                cache: repository.Cache != false,
-                includeLfs: repository.Lfs != false,
-                gitCredential,
-                objectStorageService,
-                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            return (1, true);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                continue;
+            }
+
+            try
+            {
+                var pathInfo = RepositoryPathParser.Parse(url);
+                var repositoryPrefix = StorageKeyBuilder.BuildUrlRepositoryPrefix(pathInfo);
+                expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
+
+                await SyncRepositorySnapshotAsync(
+                    mode: RepositoryJobModes.Url,
+                    repositoryUrl: url,
+                    repositoryPrefix,
+                    cache,
+                    includeLfs,
+                    gitCredential,
+                    objectStorageService,
+                    cancellationToken);
+
+                syncedRepositories++;
+            }
+            catch (Exception exception)
+            {
+                AppLogger.Error(
+                    exception,
+                    "URL repository sync failed. repository={RepositoryUrl}, error={ErrorMessage}.",
+                    url,
+                    exception.Message);
+            }
         }
-        catch (Exception exception)
-        {
-            AppLogger.Error(
-                exception,
-                "URL repository sync failed. repository={RepositoryUrl}, error={ErrorMessage}.",
-                repository.Url,
-                exception.Message);
-            return (0, true);
-        }
+
+        // The URL set is fully known from config (no discovery step), so the mirror-cleanup picture
+        // stays complete even when an individual URL fails, matching provider-mode semantics.
+        return (syncedRepositories, true);
     }
 
     private async Task SyncRepositorySnapshotAsync(
