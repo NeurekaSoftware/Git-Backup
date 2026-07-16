@@ -80,7 +80,6 @@ storage:
   secretAccessKey: secretAccessKey
   forcePathStyle: false
   payloadSignatureMode: full
-  alwaysCalculateContentMd5: false
   retention: 30
   retentionMinimum: 1
 

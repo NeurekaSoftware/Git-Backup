@@ -84,7 +84,6 @@ public sealed class SettingsLoader
         settings.Storage ??= new StorageConfig();
         settings.Storage.ForcePathStyle ??= false;
         settings.Storage.PayloadSignatureMode = NormalizePayloadSignatureMode(settings.Storage.PayloadSignatureMode);
-        settings.Storage.AlwaysCalculateContentMd5 ??= false;
         settings.Storage.RetentionMinimum ??= 1;
         settings.Credentials ??= new Dictionary<string, CredentialConfig>(StringComparer.OrdinalIgnoreCase);
         settings.Credentials = new Dictionary<string, CredentialConfig>(settings.Credentials, StringComparer.OrdinalIgnoreCase);

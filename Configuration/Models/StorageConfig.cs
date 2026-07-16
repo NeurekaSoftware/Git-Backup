@@ -22,9 +22,6 @@ public sealed class StorageConfig
     [YamlMember(Alias = "payloadSignatureMode")]
     public string? PayloadSignatureMode { get; set; }
 
-    [YamlMember(Alias = "alwaysCalculateContentMd5")]
-    public bool? AlwaysCalculateContentMd5 { get; set; }
-
     [YamlMember(Alias = "bucket")]
     public string? Bucket { get; set; }
 
