@@ -127,7 +127,7 @@ public sealed class RepositorySyncService
         IReadOnlyList<DiscoveredRepository> discoveredRepositories;
         try
         {
-            discoveredRepositories = await providerClient.ListOwnedRepositoriesAsync(repository, credentialConfig, cancellationToken);
+            discoveredRepositories = await providerClient.ListRepositoriesAsync(repository, credentialConfig, cancellationToken);
         }
         catch (Exception exception)
         {

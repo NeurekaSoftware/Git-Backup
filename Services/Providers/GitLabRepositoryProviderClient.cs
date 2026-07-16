@@ -1,4 +1,5 @@
 using GitBackup.Configuration.Models;
+using GitBackup.Runtime;
 
 namespace GitBackup.Services.Providers;
 
@@ -8,7 +9,7 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
 
     public string Provider => "gitlab";
 
-    public async Task<IReadOnlyList<DiscoveredRepository>> ListOwnedRepositoriesAsync(
+    public async Task<IReadOnlyList<DiscoveredRepository>> ListRepositoriesAsync(
         RepositoryJobConfig repository,
         CredentialConfig credential,
         CancellationToken cancellationToken)
@@ -19,16 +20,41 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
         }
 
         var baseUrl = EnsureApiSuffix(ResolveBaseUrl(repository.BaseUrl, DefaultBaseUrl), "/api/v4");
-        var repositories = new List<DiscoveredRepository>();
 
         using var client = CreateClient(token: string.Empty);
         client.DefaultRequestHeaders.Remove("Authorization");
         client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey.Trim());
 
+        var owned = await CollectAsync(
+            client,
+            page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
+            cancellationToken);
+
+        if (repository.IncludeStarred != true)
+        {
+            return owned;
+        }
+
+        AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
+        var starred = await CollectAsync(
+            client,
+            page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
+            cancellationToken);
+
+        return DistinctByCloneUrl(owned.Concat(starred));
+    }
+
+    private static async Task<List<DiscoveredRepository>> CollectAsync(
+        HttpClient client,
+        Func<int, string> buildRequestUri,
+        CancellationToken cancellationToken)
+    {
+        var repositories = new List<DiscoveredRepository>();
+
         var page = 1;
         while (true)
         {
-            var requestUri = $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}";
+            var requestUri = buildRequestUri(page);
             using var response = await client.GetAsync(requestUri, cancellationToken);
             response.EnsureSuccessStatusCode();
 

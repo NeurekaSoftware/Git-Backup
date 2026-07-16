@@ -27,4 +27,7 @@ public sealed class RepositoryJobConfig
 
     [YamlMember(Alias = "enabled")]
     public bool? Enabled { get; set; }
+
+    [YamlMember(Alias = "includeStarred")]
+    public bool? IncludeStarred { get; set; }
 }

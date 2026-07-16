@@ -28,6 +28,7 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 |---|---|---|---|---|
 | Git repository data | ✅ | ✅ | ✅ | ✅ |
 | Git LFS objects | ✅ | ✅ | ✅ | ✅ |
+| Starred repositories | ✅ | ✅ | ✅ | ❌ |
 | Issues | ❌ | ❌ | ❌ | ❌ |
 | Issue comments | ❌ | ❌ | ❌ | ❌ |
 | Pull requests / merge requests | ❌ | ❌ | ❌ | ❌ |
@@ -98,6 +99,7 @@ repositories:
   - mode: provider
     provider: github
     credential: github
+    includeStarred: true
   - mode: provider
     provider: gitlab
     credential: gitlab
@@ -123,6 +125,7 @@ Each entry under `repositories` accepts:
 | `mode` | `provider` (discover all repositories for an account) or `url` (specific repositories). | *required* |
 | `provider` | Forge to discover: `github`, `gitlab`, or `forgejo`. Provider mode. | *required (provider)* |
 | `baseUrl` | Base URL of a self-hosted forge instance. Provider mode. | forge's public URL |
+| `includeStarred` | Also back up repositories the account has starred. Provider mode. | `false` |
 | `url` | A single repository URL, or a list of repository URLs. URL mode. | *required (url)* |
 | `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required (provider)* |
 | `lfs` | Back up Git LFS objects. | `true` |

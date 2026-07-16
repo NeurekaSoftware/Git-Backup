@@ -6,7 +6,7 @@ public interface IRepositoryProviderClient
 {
     string Provider { get; }
 
-    Task<IReadOnlyList<DiscoveredRepository>> ListOwnedRepositoriesAsync(
+    Task<IReadOnlyList<DiscoveredRepository>> ListRepositoriesAsync(
         RepositoryJobConfig repository,
         CredentialConfig credential,
         CancellationToken cancellationToken);

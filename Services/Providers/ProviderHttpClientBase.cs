@@ -75,4 +75,24 @@ public abstract class ProviderHttpClientBase
             ? value.GetString()
             : null;
     }
+
+    /// <summary>
+    /// Removes repositories that share a clone URL, keeping first occurrence. Used when owned and
+    /// starred results are merged, since a starred repository can also be an owned one.
+    /// </summary>
+    protected static IReadOnlyList<DiscoveredRepository> DistinctByCloneUrl(
+        IEnumerable<DiscoveredRepository> repositories)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<DiscoveredRepository>();
+        foreach (var repository in repositories)
+        {
+            if (seen.Add(repository.CloneUrl))
+            {
+                result.Add(repository);
+            }
+        }
+
+        return result;
+    }
 }
