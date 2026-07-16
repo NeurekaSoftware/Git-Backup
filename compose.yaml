@@ -1,6 +1,6 @@
 services:
   git-backup:
-    image: registry.neureka.dev/git/git-backup:edge
+    image: registry.neureka.dev/git/backup:edge
     container_name: git-backup
     env_file:
       - .env
