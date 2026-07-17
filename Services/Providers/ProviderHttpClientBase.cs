@@ -509,7 +509,7 @@ public abstract class ProviderHttpClientBase
         string? body,
         IEnumerable<BackedUpComment> comments,
         Regex pattern,
-        Func<Match, BackedUpAttachment> build)
+        Func<Match, BackedUpAttachment?> build)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var attachments = new List<BackedUpAttachment>();
@@ -523,8 +523,10 @@ public abstract class ProviderHttpClientBase
 
             foreach (Match match in pattern.Matches(text))
             {
+                // build returns null for a match the provider decides not to trust (e.g. an upload
+                // reference carrying a path separator); skip those rather than record them.
                 var attachment = build(match);
-                if (seen.Add(attachment.OriginalPath))
+                if (attachment is not null && seen.Add(attachment.OriginalPath))
                 {
                     attachments.Add(attachment);
                 }

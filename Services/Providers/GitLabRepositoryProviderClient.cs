@@ -390,6 +390,16 @@ public sealed class GitLabRepositoryProviderClient
         {
             var sha = match.Groups[1].Value;
             var rawName = match.Groups[2].Value;
+
+            // The name comes from untrusted issue/comment text. A '/' or '..' would survive into the
+            // download URL, where Uri's dot-segment normalization walks the token-bearing request off
+            // the uploads path to any endpoint on the instance (e.g. /api/v4/users) — the host is
+            // unchanged, so the request still counts as same-origin and keeps the credential.
+            if (rawName.Contains('/') || rawName.Contains('\\') || rawName is "." or "..")
+            {
+                return null;
+            }
+
             var originalPath = $"/uploads/{sha}/{rawName}";
             return new BackedUpAttachment
             {
