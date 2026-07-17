@@ -1,14 +1,28 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 
 namespace GitBackup.Services.Providers;
 
-public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRepositoryProviderClient
+public sealed class GitLabRepositoryProviderClient
+    : ProviderHttpClientBase, IRepositoryProviderClient, IProjectMetadataProviderClient
 {
     private const string DefaultBaseUrl = "https://gitlab.com";
 
+    // GitLab renders upload references as /uploads/{32-hex-sha}/{filename} inside issue, merge
+    // request, and note bodies. The filename runs until whitespace or a markdown/HTML delimiter.
+    private static readonly Regex UploadReference = new(
+        @"/uploads/([0-9a-fA-F]{32})/([^\s)\]""'<>]+)",
+        RegexOptions.Compiled);
+
     public string Provider => "gitlab";
+
+    public bool SupportsIssues => true;
+
+    public bool SupportsMergeRequests => true;
+
+    public bool SupportsArtifacts => true;
 
     public async Task<IReadOnlyList<DiscoveredRepository>> ListRepositoriesAsync(
         RepositoryJobConfig repository,
@@ -20,18 +34,15 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
             return [];
         }
 
-        var baseUrl = EnsureApiSuffix(ResolveBaseUrl(repository.BaseUrl, DefaultBaseUrl), "/api/v4");
-
-        using var client = CreateClient(token: string.Empty);
-        client.DefaultRequestHeaders.Remove("Authorization");
-        client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey.Trim());
+        var baseUrl = ResolveApiBaseUrl(repository.BaseUrl);
+        using var client = CreateGitLabClient(credential);
 
         var results = new List<DiscoveredRepository>();
 
         results.AddRange(await CollectAsync(
             client,
             page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
-            MapProject,
+            item => MapProject(item, isStarred: false),
             cancellationToken));
 
         if (repository.IncludeStarred == true)
@@ -40,7 +51,7 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
             results.AddRange(await CollectAsync(
                 client,
                 page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
-                MapProject,
+                item => MapProject(item, isStarred: true),
                 cancellationToken));
         }
 
@@ -58,19 +69,98 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
         return DistinctByCloneUrl(results);
     }
 
-    private static async Task<List<DiscoveredRepository>> CollectAsync(
-        HttpClient client,
-        Func<int, string> buildRequestUri,
-        Func<JsonElement, DiscoveredRepository?> mapItem,
+    public async Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        var repositories = new List<DiscoveredRepository>();
+        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            return [];
+        }
+
+        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
+        var projectId = ResolveProjectIdentifier(context);
+        using var client = CreateGitLabClient(credential);
+
+        var issues = await CollectAsync(
+            client,
+            page => $"{baseUrl}/projects/{projectId}/issues?per_page=100&page={page}",
+            MapIssue,
+            cancellationToken);
+
+        foreach (var issue in issues)
+        {
+            issue.Comments = await CollectAsync(
+                client,
+                page => $"{baseUrl}/projects/{projectId}/issues/{issue.Number}/notes?per_page=100&sort=asc&page={page}",
+                MapNote,
+                cancellationToken);
+
+            issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
+        }
+
+        return issues;
+    }
+
+    public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            return [];
+        }
+
+        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
+        var projectId = ResolveProjectIdentifier(context);
+        using var client = CreateGitLabClient(credential);
+
+        var mergeRequests = await CollectAsync(
+            client,
+            page => $"{baseUrl}/projects/{projectId}/merge_requests?per_page=100&page={page}",
+            MapMergeRequest,
+            cancellationToken);
+
+        foreach (var mergeRequest in mergeRequests)
+        {
+            mergeRequest.Comments = await CollectAsync(
+                client,
+                page => $"{baseUrl}/projects/{projectId}/merge_requests/{mergeRequest.Number}/notes?per_page=100&sort=asc&page={page}",
+                MapNote,
+                cancellationToken);
+
+            mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
+        }
+
+        return mergeRequests;
+    }
+
+    public async Task<Stream> OpenAttachmentAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        string downloadUrl,
+        CancellationToken cancellationToken)
+    {
+        using var client = CreateGitLabClient(credential);
+        return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
+    }
+
+    private static async Task<List<T>> CollectAsync<T>(
+        HttpClient client,
+        Func<int, string> buildRequestUri,
+        Func<JsonElement, T?> mapItem,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        var items = new List<T>();
 
         var page = 1;
         while (true)
         {
             var requestUri = buildRequestUri(page);
-            using var response = await client.GetAsync(requestUri, cancellationToken);
+            using var response = await GetWithRetryAsync(client, requestUri, cancellationToken);
             response.EnsureSuccessStatusCode();
 
             using var document = await ReadJsonDocumentAsync(response, cancellationToken);
@@ -84,7 +174,7 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
                 var mapped = mapItem(item);
                 if (mapped is not null)
                 {
-                    repositories.Add(mapped);
+                    items.Add(mapped);
                 }
             }
 
@@ -102,10 +192,10 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
             page = nextPage;
         }
 
-        return repositories;
+        return items;
     }
 
-    private static DiscoveredRepository? MapProject(JsonElement item)
+    private static DiscoveredRepository? MapProject(JsonElement item, bool isStarred)
     {
         var cloneUrl = GetStringOrNull(item, "http_url_to_repo");
         if (string.IsNullOrWhiteSpace(cloneUrl))
@@ -116,7 +206,9 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
         return new DiscoveredRepository
         {
             CloneUrl = cloneUrl,
-            WebUrl = GetStringOrNull(item, "web_url")
+            WebUrl = GetStringOrNull(item, "web_url"),
+            ProviderProjectId = GetInt64OrNull(item, "id")?.ToString(),
+            IsStarred = isStarred
         };
     }
 
@@ -142,6 +234,153 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
             Identifier = id,
             ParentUrl = isProjectSnippet ? TrimSnippetSuffix(webUrl) : null
         };
+    }
+
+    private static BackedUpIssue? MapIssue(JsonElement item)
+    {
+        var number = GetInt64OrNull(item, "iid") ?? GetInt64OrNull(item, "id");
+        var title = GetStringOrNull(item, "title");
+        if (number is null || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        return new BackedUpIssue
+        {
+            Number = number.Value,
+            Title = title,
+            State = GetStringOrNull(item, "state"),
+            Author = GetNestedStringOrNull(item, "author", "username"),
+            Body = GetStringOrNull(item, "description"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
+            ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
+            Labels = GetLabelNames(item, "labels"),
+            WebUrl = GetStringOrNull(item, "web_url")
+        };
+    }
+
+    private static BackedUpMergeRequest? MapMergeRequest(JsonElement item)
+    {
+        var number = GetInt64OrNull(item, "iid") ?? GetInt64OrNull(item, "id");
+        var title = GetStringOrNull(item, "title");
+        if (number is null || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        return new BackedUpMergeRequest
+        {
+            Number = number.Value,
+            Title = title,
+            State = GetStringOrNull(item, "state"),
+            Author = GetNestedStringOrNull(item, "author", "username"),
+            Body = GetStringOrNull(item, "description"),
+            SourceBranch = GetStringOrNull(item, "source_branch"),
+            TargetBranch = GetStringOrNull(item, "target_branch"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
+            MergedAt = GetDateTimeOffsetOrNull(item, "merged_at"),
+            ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
+            Labels = GetLabelNames(item, "labels"),
+            WebUrl = GetStringOrNull(item, "web_url")
+        };
+    }
+
+    private static BackedUpComment? MapNote(JsonElement item)
+    {
+        var body = GetStringOrNull(item, "body");
+        var author = GetNestedStringOrNull(item, "author", "username");
+        if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(author))
+        {
+            return null;
+        }
+
+        return new BackedUpComment
+        {
+            Id = GetInt64OrNull(item, "id"),
+            Author = author,
+            Body = body,
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
+            System = GetBoolean(item, "system")
+        };
+    }
+
+    private static IReadOnlyList<BackedUpAttachment> ExtractAttachments(
+        ProjectMetadataContext context,
+        string? body,
+        IEnumerable<BackedUpComment> comments)
+    {
+        var projectUrl = (context.WebUrl ?? TrimGitSuffix(context.CloneUrl)).TrimEnd('/');
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var attachments = new List<BackedUpAttachment>();
+
+        void Scan(string? text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            foreach (Match match in UploadReference.Matches(text))
+            {
+                var sha = match.Groups[1].Value;
+                var rawName = match.Groups[2].Value;
+                var originalPath = $"/uploads/{sha}/{rawName}";
+                if (!seen.Add(originalPath))
+                {
+                    continue;
+                }
+
+                attachments.Add(new BackedUpAttachment
+                {
+                    FileName = $"{sha[..8]}-{AttachmentDownloader.SanitizeFileName(rawName)}",
+                    OriginalPath = originalPath,
+                    DownloadUrl = $"{projectUrl}{originalPath}"
+                });
+            }
+        }
+
+        Scan(body);
+        foreach (var comment in comments)
+        {
+            Scan(comment.Body);
+        }
+
+        return attachments;
+    }
+
+    private HttpClient CreateGitLabClient(CredentialConfig credential)
+    {
+        var client = CreateClient(token: string.Empty);
+        client.DefaultRequestHeaders.Remove("Authorization");
+        client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey!.Trim());
+        return client;
+    }
+
+    private static string ResolveApiBaseUrl(string? configuredBaseUrl)
+    {
+        return EnsureApiSuffix(ResolveBaseUrl(configuredBaseUrl, DefaultBaseUrl), "/api/v4");
+    }
+
+    private static string ResolveProjectIdentifier(ProjectMetadataContext context)
+    {
+        if (!string.IsNullOrWhiteSpace(context.ProviderProjectId))
+        {
+            return context.ProviderProjectId.Trim();
+        }
+
+        // Fall back to the URL-encoded project path (namespace/project), which GitLab accepts in
+        // place of the numeric id. This keeps issue backup working even if discovery did not capture
+        // the id for some reason.
+        if (!Uri.TryCreate(context.CloneUrl, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException($"Cannot resolve a GitLab project id from '{context.CloneUrl}'.");
+        }
+
+        var path = TrimGitSuffix(uri.AbsolutePath.Trim('/'));
+        return Uri.EscapeDataString(path);
     }
 
     private static string? GetSnippetId(JsonElement item)
@@ -171,5 +410,10 @@ public sealed class GitLabRepositoryProviderClient : ProviderHttpClientBase, IRe
         }
 
         return marker > 0 ? webUrl[..marker] : null;
+    }
+
+    private static string TrimGitSuffix(string value)
+    {
+        return value.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? value[..^4] : value;
     }
 }

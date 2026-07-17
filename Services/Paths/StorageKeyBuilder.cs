@@ -7,6 +7,11 @@ public static class StorageKeyBuilder
     public const string RepositoriesPrefix = "repositories/";
     public const string SnippetsPrefix = "snippets/";
 
+    public const string IssuesCollectionSegment = "issues";
+    public const string MergeRequestsCollectionSegment = "merge-requests";
+    public const string AttachmentsCollectionSegment = "attachments";
+    public const string CollectionManifestObjectName = "index.json";
+
     public static string BuildProviderRepositoryPrefix(string provider, RepositoryPathInfo repository)
     {
         var segments = new List<string>
@@ -58,6 +63,56 @@ public static class StorageKeyBuilder
     public static string BuildRepositoryMetadataObjectKey(string repositoryPrefix)
     {
         return $"{repositoryPrefix.Trim('/')}/{RepositoryMetadataObjectName}";
+    }
+
+    // Issues and merge requests are stored as latest-state JSON documents nested under their
+    // repository prefix: {repositoryPrefix}/issues/{number}.json and
+    // {repositoryPrefix}/merge-requests/{number}.json, each collection with an index.json manifest
+    // and an attachments/{number}/ folder for downloaded binary uploads.
+
+    public static string BuildIssuesCollectionPrefix(string repositoryPrefix)
+    {
+        return BuildCollectionPrefix(repositoryPrefix, IssuesCollectionSegment);
+    }
+
+    public static string BuildIssueObjectKey(string repositoryPrefix, long number)
+    {
+        return $"{BuildIssuesCollectionPrefix(repositoryPrefix)}/{number}.json";
+    }
+
+    public static string BuildIssuesManifestObjectKey(string repositoryPrefix)
+    {
+        return $"{BuildIssuesCollectionPrefix(repositoryPrefix)}/{CollectionManifestObjectName}";
+    }
+
+    public static string BuildIssueAttachmentObjectKey(string repositoryPrefix, long number, string fileName)
+    {
+        return $"{BuildIssuesCollectionPrefix(repositoryPrefix)}/{AttachmentsCollectionSegment}/{number}/{fileName}";
+    }
+
+    public static string BuildMergeRequestsCollectionPrefix(string repositoryPrefix)
+    {
+        return BuildCollectionPrefix(repositoryPrefix, MergeRequestsCollectionSegment);
+    }
+
+    public static string BuildMergeRequestObjectKey(string repositoryPrefix, long number)
+    {
+        return $"{BuildMergeRequestsCollectionPrefix(repositoryPrefix)}/{number}.json";
+    }
+
+    public static string BuildMergeRequestsManifestObjectKey(string repositoryPrefix)
+    {
+        return $"{BuildMergeRequestsCollectionPrefix(repositoryPrefix)}/{CollectionManifestObjectName}";
+    }
+
+    public static string BuildMergeRequestAttachmentObjectKey(string repositoryPrefix, long number, string fileName)
+    {
+        return $"{BuildMergeRequestsCollectionPrefix(repositoryPrefix)}/{AttachmentsCollectionSegment}/{number}/{fileName}";
+    }
+
+    private static string BuildCollectionPrefix(string repositoryPrefix, string collectionSegment)
+    {
+        return $"{repositoryPrefix.Trim('/')}/{collectionSegment}";
     }
 
     /// <summary>

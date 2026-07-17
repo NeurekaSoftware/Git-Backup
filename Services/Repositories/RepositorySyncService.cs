@@ -14,6 +14,7 @@ public sealed class RepositorySyncService
     private readonly IGitRepositoryService _gitRepositoryService;
     private readonly Func<StorageConfig, IObjectStorageService> _objectStorageServiceFactory;
     private readonly LocalMirrorStore _mirrorStore;
+    private readonly ProjectMetadataSyncService _projectMetadataSyncService;
 
     public RepositorySyncService(
         RepositoryProviderClientFactory providerFactory,
@@ -25,6 +26,7 @@ public sealed class RepositorySyncService
         _gitRepositoryService = gitRepositoryService;
         _objectStorageServiceFactory = objectStorageServiceFactory;
         _mirrorStore = new LocalMirrorStore(workingRoot);
+        _projectMetadataSyncService = new ProjectMetadataSyncService(providerFactory);
     }
 
     public async Task RunAsync(Settings settings, CancellationToken cancellationToken)
@@ -176,6 +178,17 @@ public sealed class RepositorySyncService
                     cancellationToken);
 
                 syncedRepositories++;
+
+                if (ShouldBackUpProjectMetadata(repository, discoveredRepository))
+                {
+                    await _projectMetadataSyncService.SyncAsync(
+                        repository,
+                        discoveredRepository,
+                        repositoryPrefix,
+                        credentialConfig,
+                        objectStorageService,
+                        cancellationToken);
+                }
             }
             catch (Exception exception)
             {
@@ -189,6 +202,15 @@ public sealed class RepositorySyncService
         }
 
         return (syncedRepositories, true);
+    }
+
+    // Issues and merge requests are backed up only for owned repositories: never for starred ones
+    // (even when includeStarred is set) and never for gists or snippets, which have no such data.
+    private static bool ShouldBackUpProjectMetadata(RepositoryJobConfig repository, DiscoveredRepository discoveredRepository)
+    {
+        return (repository.IncludeIssues == true || repository.IncludeMergeRequests == true)
+            && discoveredRepository.Kind == DiscoveredRepositoryKind.Repository
+            && !discoveredRepository.IsStarred;
     }
 
     // Resolves the storage prefix for a discovered resource. Repositories use their clone URL's

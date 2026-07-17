@@ -29,10 +29,11 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | Git repositories | ✅ | ✅ | ✅ | ✅ |
 | Starred repositories | ✅ | ✅ | ✅ | ➖ |
 | Git LFS objects | ✅ | ✅ | ✅ | ✅ |
-| Issues | 🚧 | 🚧 | 🚧 | ➖ |
-| Issue comments | 🚧 | 🚧 | 🚧 | ➖ |
-| Pull requests / merge requests | 🚧 | 🚧 | 🚧 | ➖ |
-| PR/MR comments | 🚧 | 🚧 | 🚧 | ➖ |
+| Issues | ✅ | ✅ | ✅ | ➖ |
+| Issue comments | ✅ | ✅ | ✅ | ➖ |
+| Pull requests / merge requests | ✅ | ✅ | ✅ | ➖ |
+| PR/MR comments | ✅ | ✅ | ✅ | ➖ |
+| Issue / PR / MR attachments | ✅ | ✅ | ✅ | ➖ |
 | Releases | 🚧 | 🚧 | 🚧 | ➖ |
 | Release artifacts | 🚧 | 🚧 | 🚧 | ➖ |
 | Gists / Snippets | ✅ | ✅ | ➖ | ➖ |
@@ -107,6 +108,10 @@ repositories:
   - mode: provider
     provider: gitlab
     credential: gitlab
+    includeIssues: true
+    includeIssueArtifacts: true
+    includeMergeRequests: true
+    includeMergeRequestsArtifacts: true
   - mode: provider
     provider: forgejo
     credential: forgejo
@@ -131,6 +136,10 @@ Each entry under `repositories` accepts:
 | `baseUrl` | Base URL of a self-hosted forge instance. Provider mode. | forge's public URL |
 | `includeStarred` | Also back up repositories the account has starred. Provider mode. | `false` |
 | `includeSnippets` | Also back up your GitHub gists and GitLab snippets. GitHub also backs up starred gists when `includeStarred` is on; GitLab has no starred snippets. Provider mode. | `false` |
+| `includeIssues` | Back up issues and their comment threads as JSON. Provider mode. | `false` |
+| `includeIssueArtifacts` | Also download files attached to issues and their comments. Requires `includeIssues`. Provider mode. | `false` |
+| `includeMergeRequests` | Back up pull/merge requests and their comment threads as JSON. Provider mode. | `false` |
+| `includeMergeRequestsArtifacts` | Also download files attached to pull/merge requests and their comments. Requires `includeMergeRequests`. Provider mode. | `false` |
 | `url` | A single repository URL, or a list of repository URLs. URL mode. | *required (url)* |
 | `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required (provider)* |
 | `lfs` | Back up Git LFS objects. | `true` |
@@ -141,3 +150,8 @@ Local mirrors for repositories that are removed from the config (or disabled) ar
 
 > [!NOTE]
 > Backing up GitHub gists (`includeSnippets`) requires a **classic** personal access token with the `gist` scope — fine-grained tokens cannot read gists.
+
+> [!IMPORTANT]
+> Issues, pull/merge requests, and their attachments are backed up for **owned** repositories only. They are never fetched for **starred** repositories — even when `includeStarred` is enabled — nor for gists or snippets.
+
+Issues and pull/merge requests are stored as latest-state JSON documents (each with its comment thread embedded) next to the repository's Git snapshots, under `issues/{number}.json` and `merge-requests/{number}.json`, with an `index.json` manifest per collection and downloaded attachments under `issues/attachments/{number}/` and `merge-requests/attachments/{number}/`. Each run overwrites these in place and removes documents for issues/MRs that no longer exist upstream.

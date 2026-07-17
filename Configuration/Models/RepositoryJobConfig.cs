@@ -33,4 +33,16 @@ public sealed class RepositoryJobConfig
 
     [YamlMember(Alias = "includeSnippets")]
     public bool? IncludeSnippets { get; set; }
+
+    [YamlMember(Alias = "includeIssues")]
+    public bool? IncludeIssues { get; set; }
+
+    [YamlMember(Alias = "includeIssueArtifacts")]
+    public bool? IncludeIssueArtifacts { get; set; }
+
+    [YamlMember(Alias = "includeMergeRequests")]
+    public bool? IncludeMergeRequests { get; set; }
+
+    [YamlMember(Alias = "includeMergeRequestsArtifacts")]
+    public bool? IncludeMergeRequestsArtifacts { get; set; }
 }

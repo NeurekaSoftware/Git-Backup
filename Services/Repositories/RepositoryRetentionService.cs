@@ -62,8 +62,9 @@ public sealed class RepositoryRetentionService
     /// object encodes its own timestamp in its key, so retention needs no side index. Snapshots
     /// are grouped by repository prefix, the newest <paramref name="retentionMinimum"/> are always
     /// protected, and anything older than <paramref name="cutoff"/> beyond that is deleted in a
-    /// single batched call. When a repository loses all of its snapshots, its remaining direct
-    /// objects (the advisory metadata.json) are removed too so no orphaned prefix is left behind.
+    /// single batched call. When a repository loses all of its snapshots, its remaining non-archive
+    /// objects (the advisory metadata.json and any issues/ and merge-requests/ documents and
+    /// attachments) are removed too so no orphaned prefix is left behind.
     /// </summary>
     private static async Task<(int DeletedSnapshots, int EmptiedRepositories)> ApplyRepositoryRetentionAsync(
         IObjectStorageService objectStorageService,
@@ -118,13 +119,14 @@ public sealed class RepositoryRetentionService
             }
         }
 
-        // Direct children of emptied repository prefixes that are not archives (the advisory
-        // metadata.json). Matching on the exact parent prefix keeps this from touching a nested
-        // repository's objects.
+        // Non-archive objects belonging to an emptied repository: the advisory metadata.json plus the
+        // issues/ and merge-requests/ subtrees (documents and attachments). Project snippets nest
+        // under {prefix}/snippets/{id} and are independent repositories with their own snapshots and
+        // retention, so they are intentionally left untouched here.
         var orphanKeys = allKeys
             .Where(objectKey =>
                 !StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out _) &&
-                emptiedRepositories.Contains(StorageKeyBuilder.GetParentPrefix(objectKey)))
+                IsReclaimableOrphan(objectKey, emptiedRepositories))
             .ToList();
 
         var keysToDelete = expiredKeys.Concat(orphanKeys).ToList();
@@ -134,5 +136,26 @@ public sealed class RepositoryRetentionService
         }
 
         return (expiredKeys.Count, emptiedRepositories.Count);
+    }
+
+    private static bool IsReclaimableOrphan(string objectKey, HashSet<string> emptiedRepositories)
+    {
+        // The advisory metadata.json is a direct child of the repository prefix.
+        if (emptiedRepositories.Contains(StorageKeyBuilder.GetParentPrefix(objectKey)))
+        {
+            return true;
+        }
+
+        // Issue/merge-request documents and their attachments nest deeper under the repository prefix.
+        foreach (var repositoryPrefix in emptiedRepositories)
+        {
+            if (objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.IssuesCollectionSegment}/", StringComparison.Ordinal) ||
+                objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -105,6 +105,10 @@ public sealed class SettingsLoader
             repository.Cache ??= true;
             repository.IncludeStarred ??= false;
             repository.IncludeSnippets ??= false;
+            repository.IncludeIssues ??= false;
+            repository.IncludeIssueArtifacts ??= false;
+            repository.IncludeMergeRequests ??= false;
+            repository.IncludeMergeRequestsArtifacts ??= false;
             repository.Mode = repository.Mode?.Trim().ToLowerInvariant();
             repository.Provider = repository.Provider?.Trim().ToLowerInvariant();
             repository.Urls = repository.Urls?
@@ -255,6 +259,16 @@ public sealed class SettingsLoader
         {
             errors.Add($"repositories[{index}].baseUrl must be an absolute http or https URL.");
         }
+
+        if (repository.IncludeIssueArtifacts == true && repository.IncludeIssues != true)
+        {
+            errors.Add($"repositories[{index}].includeIssueArtifacts requires includeIssues.");
+        }
+
+        if (repository.IncludeMergeRequestsArtifacts == true && repository.IncludeMergeRequests != true)
+        {
+            errors.Add($"repositories[{index}].includeMergeRequestsArtifacts requires includeMergeRequests.");
+        }
     }
 
     private static void ValidateUrlRepository(
@@ -296,6 +310,26 @@ public sealed class SettingsLoader
         if (repository.IncludeSnippets == true)
         {
             errors.Add($"repositories[{index}].includeSnippets is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeIssues == true)
+        {
+            errors.Add($"repositories[{index}].includeIssues is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeIssueArtifacts == true)
+        {
+            errors.Add($"repositories[{index}].includeIssueArtifacts is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeMergeRequests == true)
+        {
+            errors.Add($"repositories[{index}].includeMergeRequests is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeMergeRequestsArtifacts == true)
+        {
+            errors.Add($"repositories[{index}].includeMergeRequestsArtifacts is not allowed when mode is url.");
         }
 
         if (string.IsNullOrWhiteSpace(repository.Credential))

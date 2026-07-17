@@ -24,6 +24,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 {
     private const string ArchiveContentType = "application/gzip";
     private const string JsonContentType = "application/json";
+    private const string DefaultContentType = "application/octet-stream";
     private const int MultipartPartSizeBytes = 16 * 1024 * 1024;
     private const int MultipartParallelParts = 4;
 
@@ -166,23 +167,38 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
     public async Task UploadTextAsync(string objectKey, string content, CancellationToken cancellationToken)
     {
-        var normalizedObjectKey = objectKey.Trim('/');
         var bytes = Encoding.UTF8.GetBytes(content);
-        AppLogger.Debug("Uploading text object. objectKey={ObjectKey}, bytes={ByteCount}.", normalizedObjectKey, bytes.Length);
+        using var stream = new MemoryStream(bytes, writable: false);
+        await UploadStreamAsync(objectKey, stream, JsonContentType, cancellationToken);
+    }
+
+    public async Task UploadStreamAsync(
+        string objectKey,
+        Stream content,
+        string contentType,
+        CancellationToken cancellationToken)
+    {
+        var normalizedObjectKey = objectKey.Trim('/');
+        if (string.IsNullOrWhiteSpace(normalizedObjectKey))
+        {
+            throw new ArgumentException("Object key is required.", nameof(objectKey));
+        }
+
+        var resolvedContentType = string.IsNullOrWhiteSpace(contentType) ? DefaultContentType : contentType;
+        AppLogger.Debug(
+            "Uploading object. objectKey={ObjectKey}, contentType={ContentType}.",
+            normalizedObjectKey,
+            resolvedContentType);
 
         await ExecuteAsync(
-            "upload text object",
+            "upload object",
             normalizedObjectKey,
-            async () =>
-            {
-                using var stream = new MemoryStream(bytes, writable: false);
-                await _client.PutObjectAsync(
-                    _bucket,
-                    normalizedObjectKey,
-                    stream,
-                    request => request.ContentType.Set(JsonContentType),
-                    cancellationToken);
-            });
+            () => _client.PutObjectAsync(
+                _bucket,
+                normalizedObjectKey,
+                content,
+                request => request.ContentType.Set(resolvedContentType),
+                cancellationToken));
     }
 
     public async Task<IReadOnlyList<string>> ListObjectKeysAsync(string prefix, CancellationToken cancellationToken)
