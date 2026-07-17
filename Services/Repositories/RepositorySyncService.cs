@@ -49,6 +49,7 @@ public sealed class RepositorySyncService
         var expectedMirrorDirectories = new HashSet<string>(StringComparer.Ordinal);
         var pictureComplete = true;
         var syncedRepositories = 0;
+        var skippedInaccessibleRepositories = 0;
 
         var repositoryConcurrency = Math.Max(1, settings.Concurrency.Repositories ?? 1);
         var metadataConcurrency = Math.Max(1, settings.Concurrency.Metadata ?? 1);
@@ -72,14 +73,16 @@ public sealed class RepositorySyncService
             {
                 if (string.Equals(repository.Mode, RepositoryJobModes.Provider, StringComparison.OrdinalIgnoreCase))
                 {
-                    var (synced, complete) = await RunProviderModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, metadataConcurrency, metadataDownloadThrottle, cancellationToken);
+                    var (synced, skippedInaccessible, complete) = await RunProviderModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, metadataConcurrency, metadataDownloadThrottle, cancellationToken);
                     syncedRepositories += synced;
+                    skippedInaccessibleRepositories += skippedInaccessible;
                     pictureComplete &= complete;
                 }
                 else if (string.Equals(repository.Mode, RepositoryJobModes.Url, StringComparison.OrdinalIgnoreCase))
                 {
-                    var (synced, complete) = await RunUrlModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, cancellationToken);
+                    var (synced, skippedInaccessible, complete) = await RunUrlModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, cancellationToken);
                     syncedRepositories += synced;
+                    skippedInaccessibleRepositories += skippedInaccessible;
                     pictureComplete &= complete;
                 }
                 else
@@ -112,10 +115,13 @@ public sealed class RepositorySyncService
             AppLogger.Info("Skipping local mirror cleanup because the repository set for this run is incomplete.");
         }
 
-        AppLogger.Info("Repository run completed. syncedRepositories={SyncedRepositoryCount}.", syncedRepositories);
+        AppLogger.Info(
+            "Repository run completed. syncedRepositories={SyncedRepositoryCount}, skippedInaccessible={SkippedInaccessibleCount}.",
+            syncedRepositories,
+            skippedInaccessibleRepositories);
     }
 
-    private async Task<(int Synced, bool Complete)> RunProviderModeAsync(
+    private async Task<(int Synced, int SkippedInaccessible, bool Complete)> RunProviderModeAsync(
         Settings settings,
         RepositoryJobConfig repository,
         IObjectStorageService objectStorageService,
@@ -128,7 +134,7 @@ public sealed class RepositorySyncService
         if (string.IsNullOrWhiteSpace(repository.Provider) || string.IsNullOrWhiteSpace(repository.Credential))
         {
             AppLogger.Warn("Skipping provider repository job because provider or credential is missing.");
-            return (0, false);
+            return (0, 0, false);
         }
 
         if (!settings.Credentials.TryGetValue(repository.Credential, out var credentialConfig))
@@ -137,7 +143,7 @@ public sealed class RepositorySyncService
                 "Skipping provider repository job because credential is missing. provider={Provider}, credential={Credential}.",
                 repository.Provider,
                 repository.Credential);
-            return (0, false);
+            return (0, 0, false);
         }
 
         AppLogger.Info("Provider repository discovery started. provider={Provider}.", repository.Provider);
@@ -168,7 +174,7 @@ public sealed class RepositorySyncService
                 "Provider repository discovery failed. provider={Provider}, error={ErrorMessage}.",
                 repository.Provider,
                 exception.Message);
-            return (0, false);
+            return (0, 0, false);
         }
 
         AppLogger.Info(
@@ -180,6 +186,7 @@ public sealed class RepositorySyncService
         var cache = repository.Cache != false;
         var includeLfs = repository.Lfs != false;
         var syncedRepositories = 0;
+        var skippedInaccessibleRepositories = 0;
 
         await Parallel.ForEachAsync(
             discoveredRepositories,
@@ -228,6 +235,22 @@ public sealed class RepositorySyncService
                 {
                     throw;
                 }
+                catch (GitRemoteInaccessibleException exception)
+                {
+                    // The remote is private, was removed (e.g. between discovery and clone), or the
+                    // credential no longer grants access — a skippable per-repository condition, not a
+                    // run failure. Warn plainly and keep the git diagnostic at debug.
+                    Interlocked.Increment(ref skippedInaccessibleRepositories);
+                    AppLogger.Warn(
+                        "Skipped repository because its remote is not accessible; it may be private, removed, or the credential lacks access. provider={Provider}, repository={RepositoryUrl}.",
+                        repository.Provider,
+                        discoveredRepository.CloneUrl);
+                    AppLogger.Debug(
+                        "Remote access failure detail. provider={Provider}, repository={RepositoryUrl}, detail={ErrorMessage}.",
+                        repository.Provider,
+                        discoveredRepository.CloneUrl,
+                        exception.Message);
+                }
                 catch (Exception exception)
                 {
                     AppLogger.Error(
@@ -239,7 +262,7 @@ public sealed class RepositorySyncService
                 }
             });
 
-        return (syncedRepositories, true);
+        return (syncedRepositories, skippedInaccessibleRepositories, true);
     }
 
     // Issues and merge requests are backed up only for owned repositories: never for starred ones
@@ -277,7 +300,7 @@ public sealed class RepositorySyncService
         }
     }
 
-    private async Task<(int Synced, bool Complete)> RunUrlModeAsync(
+    private async Task<(int Synced, int SkippedInaccessible, bool Complete)> RunUrlModeAsync(
         Settings settings,
         RepositoryJobConfig repository,
         IObjectStorageService objectStorageService,
@@ -288,7 +311,7 @@ public sealed class RepositorySyncService
         if (repository.Urls is not { Count: > 0 })
         {
             AppLogger.Warn("Skipping URL repository job because url is missing.");
-            return (0, false);
+            return (0, 0, false);
         }
 
         GitCredential? gitCredential = null;
@@ -299,7 +322,7 @@ public sealed class RepositorySyncService
                 AppLogger.Warn(
                     "Skipping URL repository job because credential is missing. credential={Credential}.",
                     repository.Credential);
-                return (0, false);
+                return (0, 0, false);
             }
 
             gitCredential = CredentialResolver.ResolveGitCredential(credentialConfig);
@@ -308,6 +331,7 @@ public sealed class RepositorySyncService
         var cache = repository.Cache != false;
         var includeLfs = repository.Lfs != false;
         var syncedRepositories = 0;
+        var skippedInaccessibleRepositories = 0;
 
         await Parallel.ForEachAsync(
             repository.Urls,
@@ -344,6 +368,20 @@ public sealed class RepositorySyncService
                 {
                     throw;
                 }
+                catch (GitRemoteInaccessibleException exception)
+                {
+                    // The remote is private, was removed, or needs credentials this job does not have —
+                    // a skippable per-repository condition, not a run failure. Warn plainly and keep the
+                    // git diagnostic at debug instead of logging an error with a stack trace.
+                    Interlocked.Increment(ref skippedInaccessibleRepositories);
+                    AppLogger.Warn(
+                        "Skipped repository because its remote is not accessible; it may be private, removed, or require credentials. repository={RepositoryUrl}.",
+                        url);
+                    AppLogger.Debug(
+                        "Remote access failure detail. repository={RepositoryUrl}, detail={ErrorMessage}.",
+                        url,
+                        exception.Message);
+                }
                 catch (Exception exception)
                 {
                     AppLogger.Error(
@@ -356,7 +394,7 @@ public sealed class RepositorySyncService
 
         // The URL set is fully known from config (no discovery step), so the mirror-cleanup picture
         // stays complete even when an individual URL fails, matching provider-mode semantics.
-        return (syncedRepositories, true);
+        return (syncedRepositories, skippedInaccessibleRepositories, true);
     }
 
     private async Task SyncRepositorySnapshotAsync(

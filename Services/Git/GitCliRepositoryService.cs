@@ -170,6 +170,32 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
         return standardError.Contains("Git LFS is disabled", StringComparison.OrdinalIgnoreCase);
     }
 
+    // Recognizes git's stderr for a remote that cannot be accessed: it is private, was removed, or the
+    // credentials in play do not grant access. Anonymous access to a private or missing repository fails
+    // with "could not read Username ... terminal prompts disabled" (hosts answer 401 for both, so a
+    // typo'd or deleted repository lands here too); wrong credentials fail authentication; a valid
+    // credential to a missing repository gets "Repository not found" or an HTTP 401/403/404. Genuine
+    // failures (DNS, TLS, connection refused, corruption, transfer errors) match none of these and stay
+    // errors.
+    private static readonly string[] RemoteInaccessibleSignals =
+    [
+        "could not read Username",
+        "could not read Password",
+        "terminal prompts disabled",
+        "Authentication failed",
+        "Repository not found",
+        "The requested URL returned error: 401",
+        "The requested URL returned error: 403",
+        "The requested URL returned error: 404"
+    ];
+
+    private static bool IsRemoteInaccessible(string standardError)
+    {
+        return Array.Exists(
+            RemoteInaccessibleSignals,
+            signal => standardError.Contains(signal, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static async Task<CommandResult> ExecuteGitAsync(
         IReadOnlyList<string> arguments,
         GitCredential? credential,
@@ -243,8 +269,15 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
 
         if (throwOnFailure && result.ExitCode != 0)
         {
-            throw new InvalidOperationException(
-                $"git command failed (exit={result.ExitCode}). stdout: {result.StandardOutput}. stderr: {result.StandardError}");
+            var message =
+                $"git command failed (exit={result.ExitCode}). stdout: {result.StandardOutput}. stderr: {result.StandardError}";
+
+            // A remote we cannot reach (private, removed, or wrong/missing credentials) is an expected
+            // per-repository condition, not a run failure. Surface it as a distinct exception so a caller
+            // can skip that one repository with a warning while a genuine git failure still errors.
+            throw IsRemoteInaccessible(result.StandardError)
+                ? new GitRemoteInaccessibleException(message)
+                : new InvalidOperationException(message);
         }
 
         return result;
