@@ -1,3 +1,4 @@
+using Cronos;
 using GitBackup.Configuration;
 using GitBackup.Runtime;
 using GitBackup.Services.Repositories;
@@ -38,55 +39,24 @@ public sealed class ScheduledJobRunner : IDisposable
         Func<CancellationToken, Task> runJob,
         CancellationToken cancellationToken)
     {
-        string? lastAppliedCron = null;
-        string? lastInvalidCron = null;
+        var scheduleLog = new ScheduleLogState();
 
         while (!cancellationToken.IsCancellationRequested)
         {
             var cronExpression = getCronExpression();
-            AppLogger.Debug("{JobName}: evaluating cron expression '{CronExpression}'.", jobName, cronExpression);
-            if (!CronScheduleParser.TryParse(cronExpression, out var schedule, out var parseError) || schedule is null)
-            {
-                if (!string.Equals(lastInvalidCron, cronExpression, StringComparison.Ordinal))
-                {
-                    AppLogger.Warn(
-                        "{JobName}: schedule '{CronExpression}' is invalid ({ParseError}). Waiting for configuration reload.",
-                        jobName,
-                        cronExpression,
-                        parseError);
-                    lastInvalidCron = cronExpression;
-                }
 
-                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+            var schedule = await ResolveScheduleAsync(jobName, cronExpression, scheduleLog, cancellationToken);
+            if (schedule is null)
+            {
                 continue;
             }
 
-            lastInvalidCron = null;
-            if (!string.Equals(lastAppliedCron, cronExpression, StringComparison.Ordinal))
-            {
-                AppLogger.Info("{JobName}: active schedule is '{CronExpression}'.", jobName, cronExpression);
-                lastAppliedCron = cronExpression;
-            }
-
-            var now = DateTimeOffset.UtcNow;
-            var nextOccurrence = schedule.GetNextOccurrence(now.AddMilliseconds(1), TimeZoneInfo.Local);
-
+            var nextOccurrence = ResolveNextOccurrence(jobName, schedule, cronExpression);
             if (nextOccurrence is null)
             {
-                AppLogger.Error(
-                    "{JobName}: schedule '{CronExpression}' has no next occurrence. Stopping this job loop.",
-                    jobName,
-                    cronExpression);
                 return;
             }
 
-            var secondsUntilNextRun = Math.Max(0L, (long)Math.Ceiling((nextOccurrence.Value - now).TotalSeconds));
-            var nextRunDelay = DurationFormatter.FormatShort(secondsUntilNextRun);
-            AppLogger.Info(
-                "{JobName}: next run at {NextRunTimestamp} (in {NextRunDelay}).",
-                jobName,
-                AppLogger.FormatTimestamp(nextOccurrence.Value),
-                nextRunDelay);
             var waitResult = await DelayUntilUtcAsync(
                 jobName,
                 nextOccurrence.Value,
@@ -101,48 +71,138 @@ public sealed class ScheduledJobRunner : IDisposable
 
             if (waitResult == DelayUntilUtcResult.RescheduleRequested)
             {
-                var updatedCronExpression = getCronExpression();
                 AppLogger.Info(
                     "{JobName}: schedule changed from '{PreviousCronExpression}' to '{CurrentCronExpression}'. Recomputing next run.",
                     jobName,
                     cronExpression,
-                    updatedCronExpression);
+                    getCronExpression());
                 continue;
             }
 
-            var runStartedAt = DateTimeOffset.UtcNow;
-            // The job service logs its own richer "started" line (with counts); keep only the timing
-            // envelope here to avoid a duplicate start marker for the same event.
-            AppLogger.Debug("{JobName}: run started.", jobName);
-
-            try
-            {
-                await runJob(cancellationToken);
-                var runDurationSeconds = (DateTimeOffset.UtcNow - runStartedAt).TotalSeconds;
-                AppLogger.Info(
-                    "{JobName}: run completed in {DurationSeconds:0.###} seconds.",
-                    jobName,
-                    runDurationSeconds);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            if (!await TryRunWithTimingAsync(jobName, runJob, cancellationToken))
             {
                 return;
-            }
-            catch (Exception exception)
-            {
-                var runDurationSeconds = (DateTimeOffset.UtcNow - runStartedAt).TotalSeconds;
-                AppLogger.Error(
-                    exception,
-                    "{JobName}: run failed after {DurationSeconds:0.###} seconds. error={ErrorMessage}.",
-                    jobName,
-                    runDurationSeconds,
-                    exception.Message);
             }
 
             if (!cancellationToken.IsCancellationRequested)
             {
                 await RunRetentionAsync(jobName, cancellationToken);
             }
+        }
+    }
+
+    // Carries what the loop has already reported, so an unchanged or still-invalid schedule does not
+    // repeat the same line on every pass. Nothing outside the logging decisions reads it.
+    private sealed class ScheduleLogState
+    {
+        public string? LastAppliedCron { get; set; }
+
+        public string? LastInvalidCron { get; set; }
+    }
+
+    /// <summary>
+    /// Parses the configured schedule, reporting a change or an invalid expression only the first time
+    /// each is seen. Returns null when the expression is unusable, having waited a beat so the caller can
+    /// simply retry until the settings are fixed.
+    /// </summary>
+    private static async Task<CronExpression?> ResolveScheduleAsync(
+        string jobName,
+        string? cronExpression,
+        ScheduleLogState log,
+        CancellationToken cancellationToken)
+    {
+        AppLogger.Debug("{JobName}: evaluating cron expression '{CronExpression}'.", jobName, cronExpression);
+
+        if (!CronScheduleParser.TryParse(cronExpression, out var schedule, out var parseError) || schedule is null)
+        {
+            if (!string.Equals(log.LastInvalidCron, cronExpression, StringComparison.Ordinal))
+            {
+                AppLogger.Warn(
+                    "{JobName}: schedule '{CronExpression}' is invalid ({ParseError}). Waiting for configuration reload.",
+                    jobName,
+                    cronExpression,
+                    parseError);
+                log.LastInvalidCron = cronExpression;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+            return null;
+        }
+
+        log.LastInvalidCron = null;
+        if (!string.Equals(log.LastAppliedCron, cronExpression, StringComparison.Ordinal))
+        {
+            AppLogger.Info("{JobName}: active schedule is '{CronExpression}'.", jobName, cronExpression);
+            log.LastAppliedCron = cronExpression;
+        }
+
+        return schedule;
+    }
+
+    /// <summary>
+    /// Reports when the job runs next, or null when the schedule can never fire again and the loop
+    /// should stop.
+    /// </summary>
+    private static DateTimeOffset? ResolveNextOccurrence(string jobName, CronExpression schedule, string? cronExpression)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var nextOccurrence = schedule.GetNextOccurrence(now.AddMilliseconds(1), TimeZoneInfo.Local);
+
+        if (nextOccurrence is null)
+        {
+            AppLogger.Error(
+                "{JobName}: schedule '{CronExpression}' has no next occurrence. Stopping this job loop.",
+                jobName,
+                cronExpression);
+            return null;
+        }
+
+        var secondsUntilNextRun = Math.Max(0L, (long)Math.Ceiling((nextOccurrence.Value - now).TotalSeconds));
+        AppLogger.Info(
+            "{JobName}: next run at {NextRunTimestamp} (in {NextRunDelay}).",
+            jobName,
+            AppLogger.FormatTimestamp(nextOccurrence.Value),
+            DurationFormatter.FormatShort(secondsUntilNextRun));
+
+        return nextOccurrence;
+    }
+
+    /// <summary>
+    /// Runs the job inside its timing envelope. A failure is reported and swallowed so one bad run never
+    /// stops the schedule; false means the run was cancelled and the loop should exit.
+    /// </summary>
+    private static async Task<bool> TryRunWithTimingAsync(
+        string jobName,
+        Func<CancellationToken, Task> runJob,
+        CancellationToken cancellationToken)
+    {
+        var runStartedAt = DateTimeOffset.UtcNow;
+        // The job service logs its own richer "started" line (with counts); keep only the timing
+        // envelope here to avoid a duplicate start marker for the same event.
+        AppLogger.Debug("{JobName}: run started.", jobName);
+
+        try
+        {
+            await runJob(cancellationToken);
+            AppLogger.Info(
+                "{JobName}: run completed in {DurationSeconds:0.###} seconds.",
+                jobName,
+                (DateTimeOffset.UtcNow - runStartedAt).TotalSeconds);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Error(
+                exception,
+                "{JobName}: run failed after {DurationSeconds:0.###} seconds. error={ErrorMessage}.",
+                jobName,
+                (DateTimeOffset.UtcNow - runStartedAt).TotalSeconds,
+                exception.Message);
+            return true;
         }
     }
 
