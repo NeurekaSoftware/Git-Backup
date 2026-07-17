@@ -96,17 +96,20 @@ public sealed class GitLabRepositoryProviderClient
             HasNextPage,
             cancellationToken);
 
-        foreach (var issue in issues)
-        {
-            issue.Comments = await CollectAsync(
-                client,
-                page => $"{baseUrl}/projects/{projectId}/issues/{issue.Number}/notes?per_page=100&sort=asc&page={page}",
-                MapNote,
-                HasNextPage,
-                cancellationToken);
+        await Parallel.ForEachAsync(
+            issues,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+            async (issue, token) =>
+            {
+                issue.Comments = await CollectAsync(
+                    client,
+                    page => $"{baseUrl}/projects/{projectId}/issues/{issue.Number}/notes?per_page=100&sort=asc&page={page}",
+                    MapNote,
+                    HasNextPage,
+                    token);
 
-            issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
-        }
+                issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
+            });
 
         return issues;
     }
@@ -132,17 +135,20 @@ public sealed class GitLabRepositoryProviderClient
             HasNextPage,
             cancellationToken);
 
-        foreach (var mergeRequest in mergeRequests)
-        {
-            mergeRequest.Comments = await CollectAsync(
-                client,
-                page => $"{baseUrl}/projects/{projectId}/merge_requests/{mergeRequest.Number}/notes?per_page=100&sort=asc&page={page}",
-                MapNote,
-                HasNextPage,
-                cancellationToken);
+        await Parallel.ForEachAsync(
+            mergeRequests,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+            async (mergeRequest, token) =>
+            {
+                mergeRequest.Comments = await CollectAsync(
+                    client,
+                    page => $"{baseUrl}/projects/{projectId}/merge_requests/{mergeRequest.Number}/notes?per_page=100&sort=asc&page={page}",
+                    MapNote,
+                    HasNextPage,
+                    token);
 
-            mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
-        }
+                mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
+            });
 
         return mergeRequests;
     }

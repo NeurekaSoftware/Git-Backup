@@ -49,6 +49,9 @@ public sealed class RepositorySyncService
         var pictureComplete = true;
         var syncedRepositories = 0;
 
+        var repositoryConcurrency = Math.Max(1, settings.Concurrency.Repositories ?? 1);
+        var metadataConcurrency = Math.Max(1, settings.Concurrency.Metadata ?? 1);
+
         foreach (var repository in enabledRepositories)
         {
             if (repository is null)
@@ -62,13 +65,13 @@ public sealed class RepositorySyncService
             {
                 if (string.Equals(repository.Mode, RepositoryJobModes.Provider, StringComparison.OrdinalIgnoreCase))
                 {
-                    var (synced, complete) = await RunProviderModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, cancellationToken);
+                    var (synced, complete) = await RunProviderModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, metadataConcurrency, cancellationToken);
                     syncedRepositories += synced;
                     pictureComplete &= complete;
                 }
                 else if (string.Equals(repository.Mode, RepositoryJobModes.Url, StringComparison.OrdinalIgnoreCase))
                 {
-                    var (synced, complete) = await RunUrlModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, cancellationToken);
+                    var (synced, complete) = await RunUrlModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, cancellationToken);
                     syncedRepositories += synced;
                     pictureComplete &= complete;
                 }
@@ -106,6 +109,8 @@ public sealed class RepositorySyncService
         RepositoryJobConfig repository,
         IObjectStorageService objectStorageService,
         HashSet<string> expectedMirrorDirectories,
+        int repositoryConcurrency,
+        int metadataConcurrency,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(repository.Provider) || string.IsNullOrWhiteSpace(repository.Credential))
@@ -153,53 +158,58 @@ public sealed class RepositorySyncService
         var includeLfs = repository.Lfs != false;
         var syncedRepositories = 0;
 
-        foreach (var discoveredRepository in discoveredRepositories)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (string.IsNullOrWhiteSpace(discoveredRepository.CloneUrl))
+        await Parallel.ForEachAsync(
+            discoveredRepositories,
+            new ParallelOptions { MaxDegreeOfParallelism = repositoryConcurrency, CancellationToken = cancellationToken },
+            async (discoveredRepository, token) =>
             {
-                continue;
-            }
-
-            try
-            {
-                var repositoryPrefix = ResolveProviderPrefix(repository.Provider, discoveredRepository);
-                expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
-
-                await SyncRepositorySnapshotAsync(
-                    mode: RepositoryJobModes.Provider,
-                    repositoryUrl: discoveredRepository.CloneUrl,
-                    repositoryPrefix,
-                    cache,
-                    includeLfs,
-                    gitCredential,
-                    objectStorageService,
-                    cancellationToken);
-
-                syncedRepositories++;
-
-                if (ShouldBackUpProjectMetadata(repository, discoveredRepository))
+                if (string.IsNullOrWhiteSpace(discoveredRepository.CloneUrl))
                 {
-                    await _projectMetadataSyncService.SyncAsync(
-                        repository,
-                        discoveredRepository,
-                        repositoryPrefix,
-                        credentialConfig,
-                        objectStorageService,
-                        cancellationToken);
+                    return;
                 }
-            }
-            catch (Exception exception)
-            {
-                AppLogger.Error(
-                    exception,
-                    "Provider repository sync failed. provider={Provider}, repository={RepositoryUrl}, error={ErrorMessage}.",
-                    repository.Provider,
-                    discoveredRepository.CloneUrl,
-                    exception.Message);
-            }
-        }
+
+                try
+                {
+                    var repositoryPrefix = ResolveProviderPrefix(repository.Provider, discoveredRepository);
+                    lock (expectedMirrorDirectories)
+                    {
+                        expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
+                    }
+
+                    await SyncRepositorySnapshotAsync(
+                        mode: RepositoryJobModes.Provider,
+                        repositoryUrl: discoveredRepository.CloneUrl,
+                        repositoryPrefix,
+                        cache,
+                        includeLfs,
+                        gitCredential,
+                        objectStorageService,
+                        token);
+
+                    Interlocked.Increment(ref syncedRepositories);
+
+                    if (ShouldBackUpProjectMetadata(repository, discoveredRepository))
+                    {
+                        await _projectMetadataSyncService.SyncAsync(
+                            repository,
+                            discoveredRepository,
+                            repositoryPrefix,
+                            credentialConfig,
+                            objectStorageService,
+                            metadataConcurrency,
+                            token);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    AppLogger.Error(
+                        exception,
+                        "Provider repository sync failed. provider={Provider}, repository={RepositoryUrl}, error={ErrorMessage}.",
+                        repository.Provider,
+                        discoveredRepository.CloneUrl,
+                        exception.Message);
+                }
+            });
 
         return (syncedRepositories, true);
     }
@@ -244,6 +254,7 @@ public sealed class RepositorySyncService
         RepositoryJobConfig repository,
         IObjectStorageService objectStorageService,
         HashSet<string> expectedMirrorDirectories,
+        int repositoryConcurrency,
         CancellationToken cancellationToken)
     {
         if (repository.Urls is not { Count: > 0 })
@@ -270,42 +281,46 @@ public sealed class RepositorySyncService
         var includeLfs = repository.Lfs != false;
         var syncedRepositories = 0;
 
-        foreach (var url in repository.Urls)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (string.IsNullOrWhiteSpace(url))
+        await Parallel.ForEachAsync(
+            repository.Urls,
+            new ParallelOptions { MaxDegreeOfParallelism = repositoryConcurrency, CancellationToken = cancellationToken },
+            async (url, token) =>
             {
-                continue;
-            }
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    return;
+                }
 
-            try
-            {
-                var pathInfo = RepositoryPathParser.Parse(url);
-                var repositoryPrefix = StorageKeyBuilder.BuildUrlRepositoryPrefix(pathInfo);
-                expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
+                try
+                {
+                    var pathInfo = RepositoryPathParser.Parse(url);
+                    var repositoryPrefix = StorageKeyBuilder.BuildUrlRepositoryPrefix(pathInfo);
+                    lock (expectedMirrorDirectories)
+                    {
+                        expectedMirrorDirectories.Add(LocalMirrorStore.GetMirrorDirectoryName(repositoryPrefix));
+                    }
 
-                await SyncRepositorySnapshotAsync(
-                    mode: RepositoryJobModes.Url,
-                    repositoryUrl: url,
-                    repositoryPrefix,
-                    cache,
-                    includeLfs,
-                    gitCredential,
-                    objectStorageService,
-                    cancellationToken);
+                    await SyncRepositorySnapshotAsync(
+                        mode: RepositoryJobModes.Url,
+                        repositoryUrl: url,
+                        repositoryPrefix,
+                        cache,
+                        includeLfs,
+                        gitCredential,
+                        objectStorageService,
+                        token);
 
-                syncedRepositories++;
-            }
-            catch (Exception exception)
-            {
-                AppLogger.Error(
-                    exception,
-                    "URL repository sync failed. repository={RepositoryUrl}, error={ErrorMessage}.",
-                    url,
-                    exception.Message);
-            }
-        }
+                    Interlocked.Increment(ref syncedRepositories);
+                }
+                catch (Exception exception)
+                {
+                    AppLogger.Error(
+                        exception,
+                        "URL repository sync failed. repository={RepositoryUrl}, error={ErrorMessage}.",
+                        url,
+                        exception.Message);
+                }
+            });
 
         // The URL set is fully known from config (no discovery step), so the mirror-cleanup picture
         // stays complete even when an individual URL fails, matching provider-mode semantics.

@@ -127,6 +127,10 @@ repositories:
 schedule:
   repositories:
     cron: "0 */6 * * *"
+
+concurrency:
+  repositories: 1
+  metadata: 1
 ```
 
 Each entry under `repositories` accepts:
@@ -151,6 +155,16 @@ Each entry under `repositories` accepts:
 | `enabled` | Set `false` to skip the job. | `true` |
 
 Local mirrors for repositories that are removed from the config (or disabled) are cleaned off disk automatically on the next run.
+
+The optional `concurrency` section tunes parallelism and defaults to fully sequential:
+
+| Option | Description | Default |
+|---|---|---|
+| `concurrency.repositories` | How many repositories a run clones, archives, and uploads in parallel. | `1` |
+| `concurrency.metadata` | How many issues/merge requests are fetched (with comments) and uploaded in parallel within one repository. | `1` |
+
+> [!TIP]
+> Raising these overlaps network-bound work, but increases concurrent memory, local disk, and provider/S3 request pressure — raise gradually and watch for rate limiting (HTTP 429). With `cache: false`, running repositories in parallel multiplies peak local disk by the degree.
 
 > [!NOTE]
 > Backing up GitHub gists (`includeSnippets`) requires a **classic** personal access token with the `gist` scope — fine-grained tokens cannot read gists.

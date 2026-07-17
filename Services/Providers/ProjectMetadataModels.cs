@@ -18,6 +18,9 @@ public sealed class ProjectMetadataContext
 
     // Self-hosted forge base URL from the job config, or null for the provider default.
     public string? BaseUrl { get; init; }
+
+    // Max issues/merge requests to fetch and upload in parallel for this project. 1 = sequential.
+    public int Concurrency { get; init; } = 1;
 }
 
 /// <summary>

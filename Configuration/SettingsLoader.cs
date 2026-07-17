@@ -85,6 +85,9 @@ public sealed class SettingsLoader
         settings.Repositories ??= [];
         settings.Schedule ??= new ScheduleConfig();
         settings.Schedule.Repositories ??= new JobScheduleConfig();
+        settings.Concurrency ??= new ConcurrencyConfig();
+        settings.Concurrency.Repositories ??= 1;
+        settings.Concurrency.Metadata ??= 1;
 
         foreach (var repository in settings.Repositories)
         {
@@ -121,7 +124,21 @@ public sealed class SettingsLoader
         ValidateStorage(settings, errors);
         ValidateRepositories(settings, errors);
         ValidateSchedule(settings, errors);
+        ValidateConcurrency(settings, errors);
         return errors;
+    }
+
+    private static void ValidateConcurrency(Settings settings, List<string> errors)
+    {
+        if (settings.Concurrency.Repositories < 1)
+        {
+            errors.Add("concurrency.repositories must be 1 or greater.");
+        }
+
+        if (settings.Concurrency.Metadata < 1)
+        {
+            errors.Add("concurrency.metadata must be 1 or greater.");
+        }
     }
 
     private static void ValidateLogging(Settings settings, List<string> errors)

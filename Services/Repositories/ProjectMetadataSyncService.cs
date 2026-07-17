@@ -28,6 +28,7 @@ public sealed class ProjectMetadataSyncService
         string repositoryPrefix,
         CredentialConfig credential,
         IObjectStorageService objectStorageService,
+        int concurrency,
         CancellationToken cancellationToken)
     {
         var metadataClient = _providerFactory.TryResolveMetadata(repository.Provider!);
@@ -43,7 +44,8 @@ public sealed class ProjectMetadataSyncService
             CloneUrl = discoveredRepository.CloneUrl,
             WebUrl = discoveredRepository.WebUrl,
             ProviderProjectId = discoveredRepository.ProviderProjectId,
-            BaseUrl = repository.BaseUrl
+            BaseUrl = repository.BaseUrl,
+            Concurrency = Math.Max(1, concurrency)
         };
 
         if (repository.IncludeIssues == true)
@@ -191,26 +193,31 @@ public sealed class ProjectMetadataSyncService
     {
         var downloadArtifacts = includeArtifacts && metadataClient.SupportsArtifacts;
 
-        foreach (var item in items)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var slug = getSlug(item);
-
-            if (downloadArtifacts)
+        // Per-item work (attachment download + document upload) is independent, so it can overlap up
+        // to the configured degree. The manifest and reconciliation below run only after every item
+        // has been stored, preserving the "reconcile a complete set" guarantee.
+        await Parallel.ForEachAsync(
+            items,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+            async (item, token) =>
             {
-                await DownloadAttachmentsAsync(item, slug, buildAttachmentObjectKey, context, metadataClient, credential, objectStorageService, cancellationToken);
-            }
-            else
-            {
-                // Artifacts are gated off, so record no attachment references at all.
-                item.Attachments = [];
-            }
+                var slug = getSlug(item);
 
-            await objectStorageService.UploadTextAsync(
-                buildObjectKey(slug),
-                StorageMetadataDocuments.Serialize(item),
-                cancellationToken);
-        }
+                if (downloadArtifacts)
+                {
+                    await DownloadAttachmentsAsync(item, slug, buildAttachmentObjectKey, context, metadataClient, credential, objectStorageService, token);
+                }
+                else
+                {
+                    // Artifacts are gated off, so record no attachment references at all.
+                    item.Attachments = [];
+                }
+
+                await objectStorageService.UploadTextAsync(
+                    buildObjectKey(slug),
+                    StorageMetadataDocuments.Serialize(item),
+                    token);
+            });
 
         await objectStorageService.UploadTextAsync(manifestObjectKey, serializeManifest(items), cancellationToken);
 

@@ -105,17 +105,20 @@ public sealed class GitHubRepositoryProviderClient
                 PageIsFull(PageSize),
                 cancellationToken);
 
-            foreach (var issue in issues)
-            {
-                issue.Comments = await CollectAsync(
-                    client,
-                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?per_page={PageSize}&page={page}",
-                    MapGiteaComment,
-                    PageIsFull(PageSize),
-                    cancellationToken);
+            await Parallel.ForEachAsync(
+                issues,
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+                async (issue, token) =>
+                {
+                    issue.Comments = await CollectAsync(
+                        client,
+                        page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?per_page={PageSize}&page={page}",
+                        MapGiteaComment,
+                        PageIsFull(PageSize),
+                        token);
 
-                issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
-            }
+                    issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
+                });
 
             return issues;
         }
@@ -141,19 +144,22 @@ public sealed class GitHubRepositoryProviderClient
                 PageIsFull(PageSize),
                 cancellationToken);
 
-            foreach (var pull in pulls)
-            {
-                // Pull requests are issues on GitHub, so their discussion comments live on the issue
-                // comments endpoint.
-                pull.Comments = await CollectAsync(
-                    client,
-                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?per_page={PageSize}&page={page}",
-                    MapGiteaComment,
-                    PageIsFull(PageSize),
-                    cancellationToken);
+            await Parallel.ForEachAsync(
+                pulls,
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+                async (pull, token) =>
+                {
+                    // Pull requests are issues on GitHub, so their discussion comments live on the
+                    // issue comments endpoint.
+                    pull.Comments = await CollectAsync(
+                        client,
+                        page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?per_page={PageSize}&page={page}",
+                        MapGiteaComment,
+                        PageIsFull(PageSize),
+                        token);
 
-                pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
-            }
+                    pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
+                });
 
             return pulls;
         }

@@ -78,16 +78,19 @@ public sealed class ForgejoRepositoryProviderClient
             PageIsFull(PageSize),
             cancellationToken);
 
-        foreach (var issue in issues)
-        {
-            var (comments, commentAttachments) = await FetchCommentsAsync(
-                client,
-                page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?limit={PageSize}&page={page}",
-                cancellationToken);
+        await Parallel.ForEachAsync(
+            issues,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+            async (issue, token) =>
+            {
+                var (comments, commentAttachments) = await FetchCommentsAsync(
+                    client,
+                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?limit={PageSize}&page={page}",
+                    token);
 
-            issue.Comments = comments;
-            issue.Attachments = MergeAttachments(issue.Attachments, commentAttachments);
-        }
+                issue.Comments = comments;
+                issue.Attachments = MergeAttachments(issue.Attachments, commentAttachments);
+            });
 
         return issues;
     }
@@ -113,17 +116,20 @@ public sealed class ForgejoRepositoryProviderClient
             PageIsFull(PageSize),
             cancellationToken);
 
-        foreach (var pull in pulls)
-        {
-            // Pull requests share the issue comment thread in the Gitea/Forgejo API.
-            var (comments, commentAttachments) = await FetchCommentsAsync(
-                client,
-                page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?limit={PageSize}&page={page}",
-                cancellationToken);
+        await Parallel.ForEachAsync(
+            pulls,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+            async (pull, token) =>
+            {
+                // Pull requests share the issue comment thread in the Gitea/Forgejo API.
+                var (comments, commentAttachments) = await FetchCommentsAsync(
+                    client,
+                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?limit={PageSize}&page={page}",
+                    token);
 
-            pull.Comments = comments;
-            pull.Attachments = MergeAttachments(pull.Attachments, commentAttachments);
-        }
+                pull.Comments = comments;
+                pull.Attachments = MergeAttachments(pull.Attachments, commentAttachments);
+            });
 
         return pulls;
     }

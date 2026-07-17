@@ -19,4 +19,7 @@ public sealed class Settings
 
     [YamlMember(Alias = "schedule")]
     public ScheduleConfig Schedule { get; set; } = new();
+
+    [YamlMember(Alias = "concurrency")]
+    public ConcurrencyConfig Concurrency { get; set; } = new();
 }
