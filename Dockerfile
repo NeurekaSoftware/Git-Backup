@@ -3,19 +3,27 @@
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0-noble AS build
 ARG BUILD_CONFIGURATION=Release
 ARG TARGETARCH
-COPY . /app/src/
-RUN --mount=type=cache,target=/root/.nuget/packages,sharing=locked \
+# Restore on its own layer, from the project file alone: a source-only change then reuses it instead of
+# re-resolving every package. The NuGet cache is locked for the whole RUN, so keeping compilation out of
+# this step releases it as early as possible, and the per-arch id stops the amd64 and arm64 stages of a
+# multi-platform build from serializing behind each other on one shared cache.
+COPY GitBackup.csproj /app/src/
+RUN --mount=type=cache,target=/root/.nuget/packages,id=nuget-$TARGETARCH,sharing=locked \
     case "$TARGETARCH" in \
       amd64) DOTNET_RID=linux-x64 ;; \
       arm64) DOTNET_RID=linux-arm64 ;; \
       *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
- && dotnet restore /app/src/GitBackup.csproj -r "$DOTNET_RID" \
- && dotnet publish /app/src/GitBackup.csproj \
+ && echo "$DOTNET_RID" > /tmp/dotnet-rid \
+ && dotnet restore /app/src/GitBackup.csproj -r "$DOTNET_RID"
+
+COPY . /app/src/
+RUN --mount=type=cache,target=/root/.nuget/packages,id=nuget-$TARGETARCH,sharing=locked \
+    dotnet publish /app/src/GitBackup.csproj \
       --no-restore \
       --no-self-contained \
       -c ${BUILD_CONFIGURATION} \
-      -r "$DOTNET_RID" \
+      -r "$(cat /tmp/dotnet-rid)" \
       -o /app/bin
 
 FROM mcr.microsoft.com/dotnet/runtime:10.0-noble
