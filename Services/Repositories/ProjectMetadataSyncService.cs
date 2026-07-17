@@ -48,166 +48,129 @@ public sealed class ProjectMetadataSyncService
 
         if (repository.IncludeIssues == true)
         {
-            await BackUpIssuesAsync(repository, context, metadataClient, credential, repositoryPrefix, repositoryDisplay, objectStorageService, cancellationToken);
+            await BackUpCollectionAsync(
+                label: "Issue",
+                supportLabel: "issues",
+                countLabel: "issues",
+                supported: metadataClient.SupportsIssues,
+                listAsync: () => metadataClient.ListIssuesAsync(context, credential, cancellationToken),
+                collectionPrefix: StorageKeyBuilder.BuildIssuesCollectionPrefix(repositoryPrefix),
+                manifestObjectKey: StorageKeyBuilder.BuildIssuesManifestObjectKey(repositoryPrefix),
+                getSlug: issue => issue.Number.ToString(),
+                buildObjectKey: slug => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, slug),
+                buildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, slug, fileName),
+                serializeManifest: items => StorageMetadataDocuments.Serialize(items
+                    .Select(issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt })
+                    .ToList()),
+                includeArtifacts: repository.IncludeIssueArtifacts == true,
+                repository, context, metadataClient, credential, repositoryDisplay, objectStorageService, cancellationToken);
         }
 
         if (repository.IncludeMergeRequests == true)
         {
-            await BackUpMergeRequestsAsync(repository, context, metadataClient, credential, repositoryPrefix, repositoryDisplay, objectStorageService, cancellationToken);
+            await BackUpCollectionAsync(
+                label: "Merge request",
+                supportLabel: "merge requests",
+                countLabel: "mergeRequests",
+                supported: metadataClient.SupportsMergeRequests,
+                listAsync: () => metadataClient.ListMergeRequestsAsync(context, credential, cancellationToken),
+                collectionPrefix: StorageKeyBuilder.BuildMergeRequestsCollectionPrefix(repositoryPrefix),
+                manifestObjectKey: StorageKeyBuilder.BuildMergeRequestsManifestObjectKey(repositoryPrefix),
+                getSlug: mergeRequest => mergeRequest.Number.ToString(),
+                buildObjectKey: slug => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, slug),
+                buildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, slug, fileName),
+                serializeManifest: items => StorageMetadataDocuments.Serialize(items
+                    .Select(mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt })
+                    .ToList()),
+                includeArtifacts: repository.IncludeMergeRequestsArtifacts == true,
+                repository, context, metadataClient, credential, repositoryDisplay, objectStorageService, cancellationToken);
         }
 
         if (repository.IncludeReleases == true)
         {
-            await BackUpReleasesAsync(repository, context, metadataClient, credential, repositoryPrefix, repositoryDisplay, objectStorageService, cancellationToken);
+            await BackUpCollectionAsync(
+                label: "Release",
+                supportLabel: "releases",
+                countLabel: "releases",
+                supported: metadataClient.SupportsReleases,
+                listAsync: () => metadataClient.ListReleasesAsync(context, credential, cancellationToken),
+                collectionPrefix: StorageKeyBuilder.BuildReleasesCollectionPrefix(repositoryPrefix),
+                manifestObjectKey: StorageKeyBuilder.BuildReleasesManifestObjectKey(repositoryPrefix),
+                getSlug: release => ResolveReleaseSlug(release.Tag),
+                buildObjectKey: slug => StorageKeyBuilder.BuildReleaseObjectKey(repositoryPrefix, slug),
+                buildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildReleaseAttachmentObjectKey(repositoryPrefix, slug, fileName),
+                serializeManifest: items => StorageMetadataDocuments.Serialize(items
+                    .Select(release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt })
+                    .ToList()),
+                includeArtifacts: repository.IncludeReleaseArtifacts == true,
+                repository, context, metadataClient, credential, repositoryDisplay, objectStorageService, cancellationToken);
         }
     }
 
-    private async Task BackUpIssuesAsync(
+    /// <summary>
+    /// Backs up one metadata collection (issues, merge requests, or releases). A failed list call is
+    /// logged and skipped so a partial fetch never drives a reconciliation delete. <paramref
+    /// name="label"/> names the collection in log lines; <paramref name="supportLabel"/> and <paramref
+    /// name="countLabel"/> keep the "not supported" and "completed" messages reading naturally.
+    /// </summary>
+    private async Task BackUpCollectionAsync<T>(
+        string label,
+        string supportLabel,
+        string countLabel,
+        bool supported,
+        Func<Task<IReadOnlyList<T>>> listAsync,
+        string collectionPrefix,
+        string manifestObjectKey,
+        Func<T, string> getSlug,
+        Func<string, string> buildObjectKey,
+        Func<string, string, string> buildAttachmentObjectKey,
+        Func<IReadOnlyList<T>, string> serializeManifest,
+        bool includeArtifacts,
         RepositoryJobConfig repository,
         ProjectMetadataContext context,
         IProjectMetadataProviderClient metadataClient,
         CredentialConfig credential,
-        string repositoryPrefix,
         string repositoryDisplay,
         IObjectStorageService objectStorageService,
         CancellationToken cancellationToken)
+        where T : class, IBackedUpArtifactItem
     {
-        if (!metadataClient.SupportsIssues)
+        if (!supported)
         {
-            AppLogger.Debug("Provider does not support issues. provider={Provider}.", repository.Provider);
+            AppLogger.Debug("Provider does not support {Collection}. provider={Provider}.", supportLabel, repository.Provider);
             return;
         }
 
-        AppLogger.Info("Issue backup started. repository={Repository}.", repositoryDisplay);
+        AppLogger.Info("{Collection} backup started. repository={Repository}.", label, repositoryDisplay);
 
-        IReadOnlyList<BackedUpIssue> issues;
+        IReadOnlyList<T> items;
         try
         {
-            issues = await metadataClient.ListIssuesAsync(context, credential, cancellationToken);
+            items = await listAsync();
         }
         catch (Exception exception)
         {
             // A partial fetch must never drive reconciliation deletes, so skip the whole collection.
-            AppLogger.Error(exception, "Issue backup failed. repository={Repository}, error={ErrorMessage}.", repositoryDisplay, exception.Message);
+            AppLogger.Error(exception, "{Collection} backup failed. repository={Repository}, error={ErrorMessage}.", label, repositoryDisplay, exception.Message);
             return;
         }
 
         await SyncCollectionAsync(
-            issues,
-            StorageKeyBuilder.BuildIssuesCollectionPrefix(repositoryPrefix),
-            StorageKeyBuilder.BuildIssuesManifestObjectKey(repositoryPrefix),
-            issue => issue.Number.ToString(),
-            slug => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, slug),
-            (slug, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, slug, fileName),
-            items => StorageMetadataDocuments.Serialize(items
-                .Select(issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt })
-                .ToList()),
-            includeArtifacts: repository.IncludeIssueArtifacts == true,
+            items,
+            collectionPrefix,
+            manifestObjectKey,
+            getSlug,
+            buildObjectKey,
+            buildAttachmentObjectKey,
+            serializeManifest,
+            includeArtifacts,
             context,
             metadataClient,
             credential,
             objectStorageService,
             cancellationToken);
 
-        AppLogger.Info("Issue backup completed. repository={Repository}, issues={IssueCount}.", repositoryDisplay, issues.Count);
-    }
-
-    private async Task BackUpMergeRequestsAsync(
-        RepositoryJobConfig repository,
-        ProjectMetadataContext context,
-        IProjectMetadataProviderClient metadataClient,
-        CredentialConfig credential,
-        string repositoryPrefix,
-        string repositoryDisplay,
-        IObjectStorageService objectStorageService,
-        CancellationToken cancellationToken)
-    {
-        if (!metadataClient.SupportsMergeRequests)
-        {
-            AppLogger.Debug("Provider does not support merge requests. provider={Provider}.", repository.Provider);
-            return;
-        }
-
-        AppLogger.Info("Merge request backup started. repository={Repository}.", repositoryDisplay);
-
-        IReadOnlyList<BackedUpMergeRequest> mergeRequests;
-        try
-        {
-            mergeRequests = await metadataClient.ListMergeRequestsAsync(context, credential, cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            AppLogger.Error(exception, "Merge request backup failed. repository={Repository}, error={ErrorMessage}.", repositoryDisplay, exception.Message);
-            return;
-        }
-
-        await SyncCollectionAsync(
-            mergeRequests,
-            StorageKeyBuilder.BuildMergeRequestsCollectionPrefix(repositoryPrefix),
-            StorageKeyBuilder.BuildMergeRequestsManifestObjectKey(repositoryPrefix),
-            mergeRequest => mergeRequest.Number.ToString(),
-            slug => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, slug),
-            (slug, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, slug, fileName),
-            items => StorageMetadataDocuments.Serialize(items
-                .Select(mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt })
-                .ToList()),
-            includeArtifacts: repository.IncludeMergeRequestsArtifacts == true,
-            context,
-            metadataClient,
-            credential,
-            objectStorageService,
-            cancellationToken);
-
-        AppLogger.Info("Merge request backup completed. repository={Repository}, mergeRequests={MergeRequestCount}.", repositoryDisplay, mergeRequests.Count);
-    }
-
-    private async Task BackUpReleasesAsync(
-        RepositoryJobConfig repository,
-        ProjectMetadataContext context,
-        IProjectMetadataProviderClient metadataClient,
-        CredentialConfig credential,
-        string repositoryPrefix,
-        string repositoryDisplay,
-        IObjectStorageService objectStorageService,
-        CancellationToken cancellationToken)
-    {
-        if (!metadataClient.SupportsReleases)
-        {
-            AppLogger.Debug("Provider does not support releases. provider={Provider}.", repository.Provider);
-            return;
-        }
-
-        AppLogger.Info("Release backup started. repository={Repository}.", repositoryDisplay);
-
-        IReadOnlyList<BackedUpRelease> releases;
-        try
-        {
-            releases = await metadataClient.ListReleasesAsync(context, credential, cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            AppLogger.Error(exception, "Release backup failed. repository={Repository}, error={ErrorMessage}.", repositoryDisplay, exception.Message);
-            return;
-        }
-
-        await SyncCollectionAsync(
-            releases,
-            StorageKeyBuilder.BuildReleasesCollectionPrefix(repositoryPrefix),
-            StorageKeyBuilder.BuildReleasesManifestObjectKey(repositoryPrefix),
-            release => ResolveReleaseSlug(release.Tag),
-            slug => StorageKeyBuilder.BuildReleaseObjectKey(repositoryPrefix, slug),
-            (slug, fileName) => StorageKeyBuilder.BuildReleaseAttachmentObjectKey(repositoryPrefix, slug, fileName),
-            items => StorageMetadataDocuments.Serialize(items
-                .Select(release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt })
-                .ToList()),
-            includeArtifacts: repository.IncludeReleaseArtifacts == true,
-            context,
-            metadataClient,
-            credential,
-            objectStorageService,
-            cancellationToken);
-
-        AppLogger.Info("Release backup completed. repository={Repository}, releases={ReleaseCount}.", repositoryDisplay, releases.Count);
+        AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", label, repositoryDisplay, countLabel, items.Count);
     }
 
     private static async Task SyncCollectionAsync<T>(

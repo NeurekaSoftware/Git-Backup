@@ -44,8 +44,9 @@ public sealed class GitHubRepositoryProviderClient
 
         results.AddRange(await CollectAsync(
             client,
-            page => $"{baseUrl}/user/repos?affiliation=owner&visibility=all&per_page=100&page={page}",
-            item => MapRepository(item, isStarred: false),
+            page => $"{baseUrl}/user/repos?affiliation=owner&visibility=all&per_page={PageSize}&page={page}",
+            item => MapGiteaRepository(item, isStarred: false),
+            PageIsFull(PageSize),
             cancellationToken));
 
         if (repository.IncludeStarred == true)
@@ -53,8 +54,9 @@ public sealed class GitHubRepositoryProviderClient
             AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
             results.AddRange(await CollectAsync(
                 client,
-                page => $"{baseUrl}/user/starred?per_page=100&page={page}",
-                item => MapRepository(item, isStarred: true),
+                page => $"{baseUrl}/user/starred?per_page={PageSize}&page={page}",
+                item => MapGiteaRepository(item, isStarred: true),
+                PageIsFull(PageSize),
                 cancellationToken));
         }
 
@@ -63,8 +65,9 @@ public sealed class GitHubRepositoryProviderClient
             AppLogger.Debug("Including gists. provider={Provider}.", Provider);
             results.AddRange(await CollectAsync(
                 client,
-                page => $"{baseUrl}/gists?per_page=100&page={page}",
+                page => $"{baseUrl}/gists?per_page={PageSize}&page={page}",
                 MapGist,
+                PageIsFull(PageSize),
                 cancellationToken));
 
             if (repository.IncludeStarred == true)
@@ -72,8 +75,9 @@ public sealed class GitHubRepositoryProviderClient
                 AppLogger.Debug("Including starred gists. provider={Provider}.", Provider);
                 results.AddRange(await CollectAsync(
                     client,
-                    page => $"{baseUrl}/gists/starred?per_page=100&page={page}",
+                    page => $"{baseUrl}/gists/starred?per_page={PageSize}&page={page}",
                     MapGist,
+                    PageIsFull(PageSize),
                     cancellationToken));
             }
         }
@@ -96,16 +100,18 @@ public sealed class GitHubRepositoryProviderClient
         {
             var issues = await CollectAsync(
                 client,
-                page => $"{baseUrl}/repos/{repositoryPath}/issues?state=all&per_page=100&page={page}",
+                page => $"{baseUrl}/repos/{repositoryPath}/issues?state=all&per_page={PageSize}&page={page}",
                 MapIssue,
+                PageIsFull(PageSize),
                 cancellationToken);
 
             foreach (var issue in issues)
             {
                 issue.Comments = await CollectAsync(
                     client,
-                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?per_page=100&page={page}",
-                    MapComment,
+                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?per_page={PageSize}&page={page}",
+                    MapGiteaComment,
+                    PageIsFull(PageSize),
                     cancellationToken);
 
                 issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
@@ -130,8 +136,9 @@ public sealed class GitHubRepositoryProviderClient
         {
             var pulls = await CollectAsync(
                 client,
-                page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&per_page=100&page={page}",
-                MapPullRequest,
+                page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&per_page={PageSize}&page={page}",
+                MapGiteaPullRequest,
+                PageIsFull(PageSize),
                 cancellationToken);
 
             foreach (var pull in pulls)
@@ -140,8 +147,9 @@ public sealed class GitHubRepositoryProviderClient
                 // comments endpoint.
                 pull.Comments = await CollectAsync(
                     client,
-                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?per_page=100&page={page}",
-                    MapComment,
+                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?per_page={PageSize}&page={page}",
+                    MapGiteaComment,
+                    PageIsFull(PageSize),
                     cancellationToken);
 
                 pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
@@ -166,8 +174,9 @@ public sealed class GitHubRepositoryProviderClient
         {
             return await CollectAsync(
                 client,
-                page => $"{baseUrl}/repos/{repositoryPath}/releases?per_page=100&page={page}",
-                MapRelease,
+                page => $"{baseUrl}/repos/{repositoryPath}/releases?per_page={PageSize}&page={page}",
+                MapGiteaRelease,
+                PageIsFull(PageSize),
                 cancellationToken);
         }
     }
@@ -192,61 +201,11 @@ public sealed class GitHubRepositoryProviderClient
         return (baseUrl, CreateClient(credential.ApiKey!), repositoryPath);
     }
 
-    private static async Task<List<T>> CollectAsync<T>(
-        HttpClient client,
-        Func<int, string> buildRequestUri,
-        Func<JsonElement, T?> mapItem,
-        CancellationToken cancellationToken)
-        where T : class
+    // The GitHub issues endpoint also returns pull requests; those carry a pull_request object and are
+    // skipped here (they are backed up via the pulls endpoint instead).
+    private static BackedUpIssue? MapIssue(JsonElement item)
     {
-        var items = new List<T>();
-
-        for (var page = 1; ; page++)
-        {
-            var requestUri = buildRequestUri(page);
-            using var response = await GetWithRetryAsync(client, requestUri, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            using var document = await ReadJsonDocumentAsync(response, cancellationToken);
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                break;
-            }
-
-            var itemCount = 0;
-            foreach (var item in document.RootElement.EnumerateArray())
-            {
-                itemCount++;
-                var mapped = mapItem(item);
-                if (mapped is not null)
-                {
-                    items.Add(mapped);
-                }
-            }
-
-            if (itemCount < PageSize)
-            {
-                break;
-            }
-        }
-
-        return items;
-    }
-
-    private static DiscoveredRepository? MapRepository(JsonElement item, bool isStarred)
-    {
-        var cloneUrl = GetStringOrNull(item, "clone_url");
-        if (string.IsNullOrWhiteSpace(cloneUrl))
-        {
-            return null;
-        }
-
-        return new DiscoveredRepository
-        {
-            CloneUrl = cloneUrl,
-            WebUrl = GetStringOrNull(item, "html_url"),
-            IsStarred = isStarred
-        };
+        return item.TryGetProperty("pull_request", out _) ? null : MapGiteaIssue(item);
     }
 
     private static DiscoveredRepository? MapGist(JsonElement item)
@@ -264,136 +223,6 @@ public sealed class GitHubRepositoryProviderClient
             WebUrl = GetStringOrNull(item, "html_url"),
             Kind = DiscoveredRepositoryKind.Gist,
             Identifier = id
-        };
-    }
-
-    private static BackedUpIssue? MapIssue(JsonElement item)
-    {
-        // The GitHub issues endpoint also returns pull requests; those carry a pull_request object.
-        if (item.TryGetProperty("pull_request", out _))
-        {
-            return null;
-        }
-
-        var number = GetInt64OrNull(item, "number");
-        var title = GetStringOrNull(item, "title");
-        if (number is null || string.IsNullOrWhiteSpace(title))
-        {
-            return null;
-        }
-
-        return new BackedUpIssue
-        {
-            Number = number.Value,
-            Title = title,
-            State = GetStringOrNull(item, "state"),
-            Author = GetNestedStringOrNull(item, "user", "login"),
-            Body = GetStringOrNull(item, "body"),
-            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
-            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
-            ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
-            Labels = GetLabelNames(item, "labels"),
-            WebUrl = GetStringOrNull(item, "html_url")
-        };
-    }
-
-    private static BackedUpMergeRequest? MapPullRequest(JsonElement item)
-    {
-        var number = GetInt64OrNull(item, "number");
-        var title = GetStringOrNull(item, "title");
-        if (number is null || string.IsNullOrWhiteSpace(title))
-        {
-            return null;
-        }
-
-        return new BackedUpMergeRequest
-        {
-            Number = number.Value,
-            Title = title,
-            State = GetStringOrNull(item, "state"),
-            Author = GetNestedStringOrNull(item, "user", "login"),
-            Body = GetStringOrNull(item, "body"),
-            SourceBranch = GetNestedStringOrNull(item, "head", "ref"),
-            TargetBranch = GetNestedStringOrNull(item, "base", "ref"),
-            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
-            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
-            MergedAt = GetDateTimeOffsetOrNull(item, "merged_at"),
-            ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
-            Labels = GetLabelNames(item, "labels"),
-            WebUrl = GetStringOrNull(item, "html_url")
-        };
-    }
-
-    private static BackedUpRelease? MapRelease(JsonElement item)
-    {
-        var tag = GetStringOrNull(item, "tag_name");
-        if (string.IsNullOrWhiteSpace(tag))
-        {
-            return null;
-        }
-
-        return new BackedUpRelease
-        {
-            Tag = tag,
-            Name = GetStringOrNull(item, "name"),
-            Body = GetStringOrNull(item, "body"),
-            Author = GetNestedStringOrNull(item, "author", "login"),
-            Draft = GetBoolean(item, "draft"),
-            Prerelease = GetBoolean(item, "prerelease"),
-            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
-            PublishedAt = GetDateTimeOffsetOrNull(item, "published_at"),
-            WebUrl = GetStringOrNull(item, "html_url"),
-            Attachments = ExtractReleaseAssets(item)
-        };
-    }
-
-    private static IReadOnlyList<BackedUpAttachment> ExtractReleaseAssets(JsonElement item)
-    {
-        var attachments = new List<BackedUpAttachment>();
-        if (!item.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
-        {
-            return attachments;
-        }
-
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var asset in assets.EnumerateArray())
-        {
-            var url = GetStringOrNull(asset, "browser_download_url");
-            var name = GetStringOrNull(asset, "name");
-            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(name) || !seen.Add(url))
-            {
-                continue;
-            }
-
-            attachments.Add(new BackedUpAttachment
-            {
-                FileName = $"{AttachmentDownloader.ShortHash(url)}-{AttachmentDownloader.SanitizeFileName(name)}",
-                OriginalPath = url,
-                DownloadUrl = url,
-                SizeBytes = GetInt64OrNull(asset, "size")
-            });
-        }
-
-        return attachments;
-    }
-
-    private static BackedUpComment? MapComment(JsonElement item)
-    {
-        var body = GetStringOrNull(item, "body");
-        var author = GetNestedStringOrNull(item, "user", "login");
-        if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(author))
-        {
-            return null;
-        }
-
-        return new BackedUpComment
-        {
-            Id = GetInt64OrNull(item, "id"),
-            Author = author,
-            Body = body,
-            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
-            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
-            System = false
         };
     }
 

@@ -80,7 +80,12 @@ public abstract class ProviderHttpClientBase
                 return response;
             }
 
-            var delay = ResolveRetryDelay(response, attempt);
+            var delay = RetryDelay.Resolve(
+                response.Headers.RetryAfter,
+                attempt,
+                TimeSpan.FromSeconds(60),
+                capRetryAfterToMax: true,
+                jitter: false);
             response.Dispose();
 
             AppLogger.Debug(
@@ -91,29 +96,6 @@ public abstract class ProviderHttpClientBase
 
             await Task.Delay(delay, cancellationToken);
         }
-    }
-
-    private static TimeSpan ResolveRetryDelay(HttpResponseMessage response, int attempt)
-    {
-        var maxDelay = TimeSpan.FromSeconds(60);
-
-        var retryAfter = response.Headers.RetryAfter;
-        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
-        {
-            return delta < maxDelay ? delta : maxDelay;
-        }
-
-        if (retryAfter?.Date is { } date)
-        {
-            var until = date - DateTimeOffset.UtcNow;
-            if (until > TimeSpan.Zero)
-            {
-                return until < maxDelay ? until : maxDelay;
-            }
-        }
-
-        var backoffSeconds = Math.Min(maxDelay.TotalSeconds, Math.Pow(2, attempt - 1));
-        return TimeSpan.FromSeconds(backoffSeconds);
     }
 
     protected static string ResolveBaseUrl(string? configuredBaseUrl, string defaultBaseUrl)
@@ -273,5 +255,222 @@ public abstract class ProviderHttpClientBase
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Decides whether a paginated endpoint has another page, given the response and the number of
+    /// raw items on the page just read.
+    /// </summary>
+    protected delegate bool NextPageStrategy(HttpResponseMessage response, int page, int itemCount);
+
+    /// <summary>
+    /// Walks a paginated JSON-array endpoint, mapping each element and collecting the non-null
+    /// results. <paramref name="hasNextPage"/> encapsulates the provider's paging signal (a full page
+    /// for GitHub/Forgejo, an <c>X-Next-Page</c> header for GitLab). <paramref name="mapItem"/> may
+    /// carry a side effect (e.g. collecting per-comment attachments) and returns null to skip.
+    /// </summary>
+    protected static async Task<List<T>> CollectAsync<T>(
+        HttpClient client,
+        Func<int, string> buildRequestUri,
+        Func<JsonElement, T?> mapItem,
+        NextPageStrategy hasNextPage,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        var items = new List<T>();
+
+        for (var page = 1; ; page++)
+        {
+            var requestUri = buildRequestUri(page);
+            using var response = await GetWithRetryAsync(client, requestUri, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            using var document = await ReadJsonDocumentAsync(response, cancellationToken);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                break;
+            }
+
+            var itemCount = 0;
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                itemCount++;
+                var mapped = mapItem(item);
+                if (mapped is not null)
+                {
+                    items.Add(mapped);
+                }
+            }
+
+            if (!hasNextPage(response, page, itemCount))
+            {
+                break;
+            }
+        }
+
+        return items;
+    }
+
+    /// <summary>
+    /// A <see cref="NextPageStrategy"/> for offset-paginated APIs that signal "more" by returning a
+    /// full page of <paramref name="pageSize"/> items.
+    /// </summary>
+    protected static NextPageStrategy PageIsFull(int pageSize)
+    {
+        return (_, _, itemCount) => itemCount >= pageSize;
+    }
+
+    // --- Shared Gitea-lineage (GitHub + Forgejo) JSON mappers. GitLab uses its own field names. ---
+
+    protected static DiscoveredRepository? MapGiteaRepository(JsonElement item, bool isStarred)
+    {
+        var cloneUrl = GetStringOrNull(item, "clone_url");
+        if (string.IsNullOrWhiteSpace(cloneUrl))
+        {
+            return null;
+        }
+
+        return new DiscoveredRepository
+        {
+            CloneUrl = cloneUrl,
+            WebUrl = GetStringOrNull(item, "html_url"),
+            IsStarred = isStarred
+        };
+    }
+
+    protected static BackedUpComment? MapGiteaComment(JsonElement item)
+    {
+        var body = GetStringOrNull(item, "body");
+        var author = GetNestedStringOrNull(item, "user", "login");
+        if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(author))
+        {
+            return null;
+        }
+
+        return new BackedUpComment
+        {
+            Id = GetInt64OrNull(item, "id"),
+            Author = author,
+            Body = body,
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
+            System = false
+        };
+    }
+
+    /// <summary>
+    /// Maps the shared issue fields. Attachments are populated by the caller — GitHub scans the body,
+    /// Forgejo reads the assets array — so this leaves them empty.
+    /// </summary>
+    protected static BackedUpIssue? MapGiteaIssue(JsonElement item)
+    {
+        var number = GetInt64OrNull(item, "number");
+        var title = GetStringOrNull(item, "title");
+        if (number is null || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        return new BackedUpIssue
+        {
+            Number = number.Value,
+            Title = title,
+            State = GetStringOrNull(item, "state"),
+            Author = GetNestedStringOrNull(item, "user", "login"),
+            Body = GetStringOrNull(item, "body"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
+            ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
+            Labels = GetLabelNames(item, "labels"),
+            WebUrl = GetStringOrNull(item, "html_url")
+        };
+    }
+
+    /// <summary>Maps the shared pull-request fields; attachments are populated by the caller.</summary>
+    protected static BackedUpMergeRequest? MapGiteaPullRequest(JsonElement item)
+    {
+        var number = GetInt64OrNull(item, "number");
+        var title = GetStringOrNull(item, "title");
+        if (number is null || string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        return new BackedUpMergeRequest
+        {
+            Number = number.Value,
+            Title = title,
+            State = GetStringOrNull(item, "state"),
+            Author = GetNestedStringOrNull(item, "user", "login"),
+            Body = GetStringOrNull(item, "body"),
+            SourceBranch = GetNestedStringOrNull(item, "head", "ref"),
+            TargetBranch = GetNestedStringOrNull(item, "base", "ref"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
+            MergedAt = GetDateTimeOffsetOrNull(item, "merged_at"),
+            ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
+            Labels = GetLabelNames(item, "labels"),
+            WebUrl = GetStringOrNull(item, "html_url")
+        };
+    }
+
+    /// <summary>
+    /// Maps a release, including its downloadable assets from the <c>assets</c> array.
+    /// </summary>
+    protected static BackedUpRelease? MapGiteaRelease(JsonElement item)
+    {
+        var tag = GetStringOrNull(item, "tag_name");
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        return new BackedUpRelease
+        {
+            Tag = tag,
+            Name = GetStringOrNull(item, "name"),
+            Body = GetStringOrNull(item, "body"),
+            Author = GetNestedStringOrNull(item, "author", "login"),
+            Draft = GetBoolean(item, "draft"),
+            Prerelease = GetBoolean(item, "prerelease"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            PublishedAt = GetDateTimeOffsetOrNull(item, "published_at"),
+            WebUrl = GetStringOrNull(item, "html_url"),
+            Attachments = ExtractAssetArray(item)
+        };
+    }
+
+    /// <summary>
+    /// Extracts downloadable assets from a Gitea-lineage <c>assets</c> array, deduping by download URL
+    /// so a release (or issue/MR) never yields the same file twice.
+    /// </summary>
+    protected static IReadOnlyList<BackedUpAttachment> ExtractAssetArray(JsonElement item)
+    {
+        var attachments = new List<BackedUpAttachment>();
+        if (!item.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+        {
+            return attachments;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var asset in assets.EnumerateArray())
+        {
+            var url = GetStringOrNull(asset, "browser_download_url");
+            var name = GetStringOrNull(asset, "name");
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(name) || !seen.Add(url))
+            {
+                continue;
+            }
+
+            attachments.Add(new BackedUpAttachment
+            {
+                FileName = $"{AttachmentDownloader.ShortHash(url)}-{AttachmentDownloader.SanitizeFileName(name)}",
+                OriginalPath = url,
+                DownloadUrl = url,
+                SizeBytes = GetInt64OrNull(asset, "size")
+            });
+        }
+
+        return attachments;
     }
 }

@@ -33,7 +33,12 @@ internal sealed class NoSilentSuccessHandler : DelegatingHandler
 
             if (statusCode == 429 && attempt < MaxAttempts)
             {
-                var delay = ResolveRetryDelay(response, attempt);
+                var delay = RetryDelay.Resolve(
+                    response.Headers.RetryAfter,
+                    attempt,
+                    TimeSpan.FromSeconds(MaxBackoffSeconds),
+                    capRetryAfterToMax: false,
+                    jitter: true);
                 AppLogger.Warn(
                     "Storage request was rate limited (429). Backing off before retry. method={Method}, uri={Uri}, attempt={Attempt}, delaySeconds={DelaySeconds}.",
                     request.Method.Method,
@@ -67,26 +72,5 @@ internal sealed class NoSilentSuccessHandler : DelegatingHandler
     private static bool IsRealSuccess(int statusCode)
     {
         return statusCode is (>= 200 and <= 299) or 304;
-    }
-
-    private static TimeSpan ResolveRetryDelay(HttpResponseMessage response, int attempt)
-    {
-        var retryAfter = response.Headers.RetryAfter;
-        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
-        {
-            return delta;
-        }
-
-        if (retryAfter?.Date is { } date)
-        {
-            var untilDate = date - DateTimeOffset.UtcNow;
-            if (untilDate > TimeSpan.Zero)
-            {
-                return untilDate;
-            }
-        }
-
-        var backoffSeconds = Math.Min(Math.Pow(2, attempt - 1), MaxBackoffSeconds);
-        return TimeSpan.FromSeconds(backoffSeconds) + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 1000));
     }
 }

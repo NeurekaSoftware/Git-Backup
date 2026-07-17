@@ -46,6 +46,7 @@ public sealed class GitLabRepositoryProviderClient
             client,
             page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
             item => MapProject(item, isStarred: false),
+            HasNextPage,
             cancellationToken));
 
         if (repository.IncludeStarred == true)
@@ -55,6 +56,7 @@ public sealed class GitLabRepositoryProviderClient
                 client,
                 page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
                 item => MapProject(item, isStarred: true),
+                HasNextPage,
                 cancellationToken));
         }
 
@@ -66,6 +68,7 @@ public sealed class GitLabRepositoryProviderClient
                 client,
                 page => $"{baseUrl}/snippets?per_page=100&page={page}",
                 MapSnippet,
+                HasNextPage,
                 cancellationToken));
         }
 
@@ -90,6 +93,7 @@ public sealed class GitLabRepositoryProviderClient
             client,
             page => $"{baseUrl}/projects/{projectId}/issues?per_page=100&page={page}",
             MapIssue,
+            HasNextPage,
             cancellationToken);
 
         foreach (var issue in issues)
@@ -98,6 +102,7 @@ public sealed class GitLabRepositoryProviderClient
                 client,
                 page => $"{baseUrl}/projects/{projectId}/issues/{issue.Number}/notes?per_page=100&sort=asc&page={page}",
                 MapNote,
+                HasNextPage,
                 cancellationToken);
 
             issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
@@ -124,6 +129,7 @@ public sealed class GitLabRepositoryProviderClient
             client,
             page => $"{baseUrl}/projects/{projectId}/merge_requests?per_page=100&page={page}",
             MapMergeRequest,
+            HasNextPage,
             cancellationToken);
 
         foreach (var mergeRequest in mergeRequests)
@@ -132,6 +138,7 @@ public sealed class GitLabRepositoryProviderClient
                 client,
                 page => $"{baseUrl}/projects/{projectId}/merge_requests/{mergeRequest.Number}/notes?per_page=100&sort=asc&page={page}",
                 MapNote,
+                HasNextPage,
                 cancellationToken);
 
             mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
@@ -159,6 +166,7 @@ public sealed class GitLabRepositoryProviderClient
             client,
             page => $"{baseUrl}/projects/{projectId}/releases?per_page=100&page={page}",
             item => MapRelease(item, instanceHost),
+            HasNextPage,
             cancellationToken);
     }
 
@@ -172,52 +180,16 @@ public sealed class GitLabRepositoryProviderClient
         return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
     }
 
-    private static async Task<List<T>> CollectAsync<T>(
-        HttpClient client,
-        Func<int, string> buildRequestUri,
-        Func<JsonElement, T?> mapItem,
-        CancellationToken cancellationToken)
-        where T : class
+    // GitLab paginates via the X-Next-Page response header rather than a full-page heuristic.
+    private static bool HasNextPage(HttpResponseMessage response, int page, int itemCount)
     {
-        var items = new List<T>();
-
-        var page = 1;
-        while (true)
+        if (!response.Headers.TryGetValues("X-Next-Page", out var values))
         {
-            var requestUri = buildRequestUri(page);
-            using var response = await GetWithRetryAsync(client, requestUri, cancellationToken);
-            response.EnsureSuccessStatusCode();
-
-            using var document = await ReadJsonDocumentAsync(response, cancellationToken);
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                break;
-            }
-
-            foreach (var item in document.RootElement.EnumerateArray())
-            {
-                var mapped = mapItem(item);
-                if (mapped is not null)
-                {
-                    items.Add(mapped);
-                }
-            }
-
-            if (!response.Headers.TryGetValues("X-Next-Page", out var values))
-            {
-                break;
-            }
-
-            var nextPageRaw = values.FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(nextPageRaw) || !int.TryParse(nextPageRaw, out var nextPage) || nextPage <= page)
-            {
-                break;
-            }
-
-            page = nextPage;
+            return false;
         }
 
-        return items;
+        var raw = values.FirstOrDefault();
+        return !string.IsNullOrWhiteSpace(raw) && int.TryParse(raw, out var next) && next > page;
     }
 
     private static DiscoveredRepository? MapProject(JsonElement item, bool isStarred)
