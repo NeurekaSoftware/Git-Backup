@@ -5,6 +5,7 @@ using System.Text;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 using GitBackup.Services.Paths;
+using Genbox.HttpBuilders.Enums;
 using Genbox.SimpleS3.Core.Abstracts;
 using Genbox.SimpleS3.Core.Abstracts.Enums;
 using Genbox.SimpleS3.Core.Abstracts.Response;
@@ -184,10 +185,16 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             throw new ArgumentException("Object key is required.", nameof(objectKey));
         }
 
-        var bytes = Encoding.UTF8.GetBytes(content);
-        AppLogger.Debug("Uploading object. objectKey={ObjectKey}, contentType={ContentType}.", normalizedObjectKey, JsonContentType);
+        // Store the JSON gzip-compressed with Content-Encoding: gzip. Issue/MR documents and manifests
+        // are repetitive text that gzips several times over, cutting upload egress and stored size; a
+        // client that honors Content-Encoding still reads plain JSON, and the object key stays *.json.
+        var compressed = GzipUtf8(content);
+        AppLogger.Debug(
+            "Uploading object. objectKey={ObjectKey}, contentType={ContentType}, contentEncoding=gzip.",
+            normalizedObjectKey,
+            JsonContentType);
 
-        using var stream = new MemoryStream(bytes, writable: false);
+        using var stream = new MemoryStream(compressed, writable: false);
         await ExecuteAsync(
             "upload object",
             normalizedObjectKey,
@@ -195,8 +202,24 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
                 _bucket,
                 normalizedObjectKey,
                 stream,
-                request => request.ContentType.Set(JsonContentType),
+                request =>
+                {
+                    request.ContentType.Set(JsonContentType);
+                    request.ContentEncoding.Add(ContentEncodingType.Gzip);
+                },
                 cancellationToken));
+    }
+
+    private static byte[] GzipUtf8(string content)
+    {
+        var bytes = Encoding.UTF8.GetBytes(content);
+        using var output = new MemoryStream();
+        using (var gzip = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
+        {
+            gzip.Write(bytes, 0, bytes.Length);
+        }
+
+        return output.ToArray();
     }
 
     public async Task UploadStreamAsync(
