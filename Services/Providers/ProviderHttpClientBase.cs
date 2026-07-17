@@ -10,9 +10,19 @@ public abstract class ProviderHttpClientBase
 {
     private const string ProductName = "GitBackup";
 
+    // A single shared handler pools TCP/TLS connections across every provider client and every
+    // per-call HttpClient. Previously each `using var client = CreateClient(...)` disposed its own
+    // handler, tearing down the socket pool and leaving sockets in TIME_WAIT — which on an
+    // attachment-heavy sync risked ephemeral-port exhaustion. The clients stay cheap wrappers
+    // (disposeHandler: false) so per-request auth headers remain isolated per client.
+    private static readonly SocketsHttpHandler SharedHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    };
+
     protected static HttpClient CreateClient(string? token)
     {
-        var client = new HttpClient();
+        var client = new HttpClient(SharedHandler, disposeHandler: false);
         client.DefaultRequestHeaders.UserAgent.Add(CreateUserAgent());
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
