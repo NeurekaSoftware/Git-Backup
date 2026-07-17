@@ -40,19 +40,22 @@ public sealed class GitLabRepositoryProviderClient
         var baseUrl = ResolveApiBaseUrl(repository.BaseUrl);
         using var client = CreateAuthenticatedClient(credential);
 
-        var results = new List<DiscoveredRepository>();
-
-        results.AddRange(await CollectAsync(
-            client,
-            page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
-            item => MapProject(item, isStarred: false),
-            HasNextPage,
-            cancellationToken));
+        // The walks hit independent endpoints, so run them concurrently over the pooled handler and
+        // merge in a stable order (owned first) — DistinctByCloneUrl keeps the first occurrence.
+        var walks = new List<Task<List<DiscoveredRepository>>>
+        {
+            CollectAsync(
+                client,
+                page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
+                item => MapProject(item, isStarred: false),
+                HasNextPage,
+                cancellationToken)
+        };
 
         if (repository.IncludeStarred == true)
         {
             AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
-            results.AddRange(await CollectAsync(
+            walks.Add(CollectAsync(
                 client,
                 page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
                 item => MapProject(item, isStarred: true),
@@ -64,7 +67,7 @@ public sealed class GitLabRepositoryProviderClient
         {
             // GitLab has no "starred snippets" endpoint, so includeStarred adds nothing here.
             AppLogger.Debug("Including snippets. provider={Provider}.", Provider);
-            results.AddRange(await CollectAsync(
+            walks.Add(CollectAsync(
                 client,
                 page => $"{baseUrl}/snippets?per_page=100&page={page}",
                 MapSnippet,
@@ -72,7 +75,8 @@ public sealed class GitLabRepositoryProviderClient
                 cancellationToken));
         }
 
-        return DistinctByCloneUrl(results);
+        var walkResults = await Task.WhenAll(walks);
+        return DistinctByCloneUrl(walkResults.SelectMany(walk => walk));
     }
 
     public async Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(

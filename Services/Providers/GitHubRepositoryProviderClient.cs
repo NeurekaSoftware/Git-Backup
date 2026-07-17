@@ -40,19 +40,22 @@ public sealed class GitHubRepositoryProviderClient
         var baseUrl = ResolveGitHubApiBaseUrl(repository.BaseUrl);
         using var client = CreateAuthenticatedClient(credential);
 
-        var results = new List<DiscoveredRepository>();
-
-        results.AddRange(await CollectAsync(
-            client,
-            page => $"{baseUrl}/user/repos?affiliation=owner&visibility=all&per_page={PageSize}&page={page}",
-            item => MapGiteaRepository(item, isStarred: false),
-            PageIsFull(PageSize),
-            cancellationToken));
+        // The walks hit independent endpoints, so run them concurrently over the pooled handler and
+        // merge in a stable order (owned first) — DistinctByCloneUrl keeps the first occurrence.
+        var walks = new List<Task<List<DiscoveredRepository>>>
+        {
+            CollectAsync(
+                client,
+                page => $"{baseUrl}/user/repos?affiliation=owner&visibility=all&per_page={PageSize}&page={page}",
+                item => MapGiteaRepository(item, isStarred: false),
+                PageIsFull(PageSize),
+                cancellationToken)
+        };
 
         if (repository.IncludeStarred == true)
         {
             AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
-            results.AddRange(await CollectAsync(
+            walks.Add(CollectAsync(
                 client,
                 page => $"{baseUrl}/user/starred?per_page={PageSize}&page={page}",
                 item => MapGiteaRepository(item, isStarred: true),
@@ -63,7 +66,7 @@ public sealed class GitHubRepositoryProviderClient
         if (repository.IncludeSnippets == true)
         {
             AppLogger.Debug("Including gists. provider={Provider}.", Provider);
-            results.AddRange(await CollectAsync(
+            walks.Add(CollectAsync(
                 client,
                 page => $"{baseUrl}/gists?per_page={PageSize}&page={page}",
                 MapGist,
@@ -73,7 +76,7 @@ public sealed class GitHubRepositoryProviderClient
             if (repository.IncludeStarred == true)
             {
                 AppLogger.Debug("Including starred gists. provider={Provider}.", Provider);
-                results.AddRange(await CollectAsync(
+                walks.Add(CollectAsync(
                     client,
                     page => $"{baseUrl}/gists/starred?per_page={PageSize}&page={page}",
                     MapGist,
@@ -82,7 +85,8 @@ public sealed class GitHubRepositoryProviderClient
             }
         }
 
-        return DistinctByCloneUrl(results);
+        var walkResults = await Task.WhenAll(walks);
+        return DistinctByCloneUrl(walkResults.SelectMany(walk => walk));
     }
 
     public async Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
