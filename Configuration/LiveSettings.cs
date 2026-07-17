@@ -1,17 +1,24 @@
+using System.Security.Cryptography;
 using GitBackup.Runtime;
 
 namespace GitBackup.Configuration;
 
 public sealed class LiveSettings : IDisposable
 {
-    private static readonly TimeSpan ReloadDebounce = TimeSpan.FromMilliseconds(300);
+    // Polling, not FileSystemWatcher, because the settings file is bind-mounted into the container. A
+    // single-file bind mount pins the container to the original inode, so a host editor that saves by
+    // writing a temp file and renaming it over the original raises no inotify event and never changes the
+    // content the container sees. Re-reading the file on an interval detects the change wherever the mount
+    // does surface it (a directory mount, or an in-place edit), on any host and any editor.
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
 
     private readonly SettingsLoader _loader;
     private readonly object _sync = new();
     private readonly string _settingsPath;
     private Settings _current;
-    private FileSystemWatcher? _watcher;
-    private CancellationTokenSource? _reloadDebounceTokenSource;
+    private CancellationTokenSource? _pollCancellation;
+    private Task? _pollTask;
+    private byte[]? _lastContentHash;
     private bool _disposed;
 
     public LiveSettings(string settingsPath, Settings initialSettings, SettingsLoader? loader = null)
@@ -43,36 +50,19 @@ public sealed class LiveSettings : IDisposable
     {
         ThrowIfDisposed();
 
-        if (_watcher is not null)
+        if (_pollTask is not null)
         {
             return;
         }
 
-        var directory = System.IO.Path.GetDirectoryName(_settingsPath);
-        if (string.IsNullOrWhiteSpace(directory))
-        {
-            directory = Environment.CurrentDirectory;
-        }
+        // Seed the baseline from the file the initial settings were loaded from, so the first poll only
+        // reloads when the content has actually changed since startup rather than on the very first tick.
+        _lastContentHash = TryComputeContentHash();
 
-        var fileName = System.IO.Path.GetFileName(_settingsPath);
-        if (string.IsNullOrWhiteSpace(fileName))
-        {
-            throw new InvalidOperationException($"Unable to watch settings path '{_settingsPath}'.");
-        }
+        _pollCancellation = new CancellationTokenSource();
+        _pollTask = Task.Run(() => PollForChangesAsync(_pollCancellation.Token));
 
-        _watcher = new FileSystemWatcher(directory, fileName)
-        {
-            IncludeSubdirectories = false,
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.Size,
-            EnableRaisingEvents = true
-        };
-
-        _watcher.Changed += OnSettingsFileChanged;
-        _watcher.Created += OnSettingsFileChanged;
-        _watcher.Deleted += OnSettingsFileChanged;
-        _watcher.Renamed += OnSettingsFileRenamed;
-
-        AppLogger.Info("Settings file watcher started. settingsPath={SettingsPath}.", _settingsPath);
+        AppLogger.Info("Watching settings file for changes. settingsPath={SettingsPath}.", _settingsPath);
     }
 
     public void Dispose()
@@ -84,78 +74,75 @@ public sealed class LiveSettings : IDisposable
 
         _disposed = true;
 
-        lock (_sync)
+        _pollCancellation?.Cancel();
+
+        try
         {
-            _reloadDebounceTokenSource?.Cancel();
-            _reloadDebounceTokenSource?.Dispose();
-            _reloadDebounceTokenSource = null;
+            _pollTask?.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (AggregateException)
+        {
+            // The poll loop only ends via cancellation; nothing here needs to surface.
         }
 
-        if (_watcher is not null)
+        _pollCancellation?.Dispose();
+        _pollCancellation = null;
+        _pollTask = null;
+    }
+
+    private async Task PollForChangesAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(PollInterval);
+
+        try
         {
-            _watcher.Changed -= OnSettingsFileChanged;
-            _watcher.Created -= OnSettingsFileChanged;
-            _watcher.Deleted -= OnSettingsFileChanged;
-            _watcher.Renamed -= OnSettingsFileRenamed;
-            _watcher.Dispose();
-            _watcher = null;
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                CheckForChange();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Expected on shutdown.
         }
     }
 
-    private void OnSettingsFileChanged(object sender, FileSystemEventArgs args)
+    private void CheckForChange()
     {
-        AppLogger.Debug(
-            "Settings file event detected. changeType={ChangeType}, path={Path}.",
-            args.ChangeType,
-            args.FullPath);
-        TriggerReload();
-    }
+        var currentHash = TryComputeContentHash();
 
-    private void OnSettingsFileRenamed(object sender, RenamedEventArgs args)
-    {
-        AppLogger.Debug(
-            "Settings file rename detected. oldPath={OldPath}, newPath={NewPath}.",
-            args.OldFullPath,
-            args.FullPath);
-        TriggerReload();
-    }
+        // A transient read miss (the file briefly gone during a save) leaves the baseline untouched so the
+        // next tick can retry; the existing settings keep running in the meantime.
+        if (currentHash is null)
+        {
+            AppLogger.Debug("Settings file was not readable this poll; keeping current settings. settingsPath={SettingsPath}.", _settingsPath);
+            return;
+        }
 
-    private void TriggerReload()
-    {
-        if (_disposed)
+        if (_lastContentHash is not null && currentHash.AsSpan().SequenceEqual(_lastContentHash))
         {
             return;
         }
 
-        CancellationToken debounceToken;
-
-        lock (_sync)
-        {
-            _reloadDebounceTokenSource?.Cancel();
-            _reloadDebounceTokenSource?.Dispose();
-
-            _reloadDebounceTokenSource = new CancellationTokenSource();
-            // Capture the token value while still holding the lock: a superseding reload may dispose
-            // this source before the task below starts, and reading .Token on a disposed source throws.
-            debounceToken = _reloadDebounceTokenSource.Token;
-        }
-
-        _ = Task.Run(() => ReloadAfterDebounceAsync(debounceToken));
-        AppLogger.Debug("Settings reload scheduled after debounce.");
+        _lastContentHash = currentHash;
+        AppLogger.Info("Settings file changed on disk. Reloading. settingsPath={SettingsPath}.", _settingsPath);
+        Reload();
     }
 
-    private async Task ReloadAfterDebounceAsync(CancellationToken cancellationToken)
+    private byte[]? TryComputeContentHash()
     {
         try
         {
-            await Task.Delay(ReloadDebounce, cancellationToken);
-            AppLogger.Info("Reloading settings from disk.");
-            Reload();
+            using var stream = new FileStream(
+                _settingsPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite);
+            return SHA256.HashData(stream);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Ignore superseded reload tasks.
-            AppLogger.Debug("Superseded settings reload request was canceled.");
+            return null;
         }
     }
 

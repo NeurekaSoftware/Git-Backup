@@ -2,7 +2,7 @@
 .gitattributes
 .gitlab-ci.yml
 .env
-settings.yaml
+config/
 compose.yaml
 *.md
 **/bin

@@ -18,7 +18,10 @@ services:
       - SETUID
     volumes:
       - gitbackup-data:/app/data
-      - ./settings.yaml:/app/data/settings.yaml:ro
+      # Mount the config directory, not the file: a single-file bind mount pins the container to the
+      # original inode, so host edits saved by write-and-rename never reach the container and hot reload
+      # silently does nothing. A directory mount lets the container see every edit.
+      - ./config:/app/config:ro
     restart: unless-stopped
 
 networks:

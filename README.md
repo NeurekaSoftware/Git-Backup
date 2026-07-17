@@ -59,7 +59,7 @@ curl -fsSLO https://code.neureka.dev/git/backup/-/raw/main/compose.yaml
 curl -fsSL -o .env https://code.neureka.dev/git/backup/-/raw/main/.env.example
 ```
 
-Create your `settings.yaml` next to `compose.yaml` (see [settings.yaml](#settingsyaml)),
+Create your settings file at `config/settings.yaml` next to `compose.yaml` (see [settings.yaml](#settingsyaml)),
 then start the stack:
 
 ```sh
@@ -68,10 +68,14 @@ docker compose up -d
 
 ### settings.yaml
 
-Place `settings.yaml` next to `compose.yaml`; `compose` binds it read-only into the container.
+Place `settings.yaml` inside a `config/` directory next to `compose.yaml` (so the file is at
+`config/settings.yaml`); `compose` binds that directory read-only into the container. The directory is
+mounted rather than the file itself: a single-file bind mount pins the container to the original inode,
+so edits saved by the write-and-rename that most editors use would never reach the container.
 
 > [!TIP]
-> These settings support hot reload so you don't have to restart your container after making changes.
+> These settings support hot reload, so you don't have to restart your container after editing
+> `config/settings.yaml`. The change is picked up within a couple of seconds and logged.
 
 ```yaml
 logging:

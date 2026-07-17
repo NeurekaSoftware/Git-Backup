@@ -12,7 +12,7 @@ namespace GitBackup;
 
 class Program
 {
-    private const string ContainerBinPath = "/app/bin";
+    private const string ContainerConfigPath = "/app/config";
     private const string ContainerDataPath = "/app/data";
 
     static async Task<int> Main(string[] args)
@@ -159,9 +159,7 @@ class Program
         {
             return
             [
-                Path.Combine(ContainerBinPath, "settings.yaml"),
-                Path.Combine(ContainerDataPath, "settings.yaml"),
-                Path.Combine(Environment.CurrentDirectory, "settings.yaml")
+                Path.Combine(ContainerConfigPath, "settings.yaml")
             ];
         }
 

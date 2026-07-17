@@ -1,4 +1,4 @@
 bin/
 obj/
-settings.yaml
+config/settings.yaml
 .env
