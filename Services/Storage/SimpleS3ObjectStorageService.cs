@@ -28,6 +28,10 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
     private const int MultipartPartSizeBytes = 16 * 1024 * 1024;
     private const int MultipartParallelParts = 4;
 
+    // Largest payload sent as a single PutObject. Below this the whole body is held in memory briefly,
+    // which is cheaper than a multipart round trip; above it, streaming multipart keeps peak memory flat.
+    private const int SinglePutMaxBytes = 5 * 1024 * 1024;
+
     private readonly ServiceProvider _serviceProvider;
     private readonly ISimpleClient _client;
     private readonly string _bucket;
@@ -226,6 +230,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         string objectKey,
         Stream content,
         string contentType,
+        long? knownLength,
         CancellationToken cancellationToken)
     {
         var normalizedObjectKey = objectKey.Trim('/');
@@ -235,6 +240,36 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         }
 
         var resolvedContentType = string.IsNullOrWhiteSpace(contentType) ? MimeTypeResolver.DefaultContentType : contentType;
+
+        // Most attachments are small — a screenshot pasted into an issue. Multipart costs three round
+        // trips (initiate + part + complete) and reads through a buffer sized to the full part size, so
+        // for those it is far more expensive than a single PutObject over a right-sized buffer. Take the
+        // multipart path only when the payload is genuinely large, or when the length is unknown and it
+        // therefore might be.
+        if (knownLength is { } length && length <= SinglePutMaxBytes)
+        {
+            AppLogger.Debug(
+                "Uploading object. objectKey={ObjectKey}, contentType={ContentType}, bytes={Bytes}.",
+                normalizedObjectKey,
+                resolvedContentType,
+                length);
+
+            using var buffer = new MemoryStream((int)length);
+            await content.CopyToAsync(buffer, cancellationToken);
+            buffer.Position = 0;
+
+            await ExecuteAsync(
+                "upload object",
+                normalizedObjectKey,
+                () => _client.PutObjectAsync(
+                    _bucket,
+                    normalizedObjectKey,
+                    buffer,
+                    request => request.ContentType.Set(resolvedContentType),
+                    cancellationToken));
+            return;
+        }
+
         AppLogger.Debug(
             "Streaming object upload. objectKey={ObjectKey}, contentType={ContentType}.",
             normalizedObjectKey,
@@ -242,7 +277,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
         // Upload straight from the (non-seekable) source stream via multipart — the same path the
         // archive uses — so an attachment of unknown or large size is never buffered fully in memory.
-        // A small attachment is sent as a single final part.
         await ExecuteAsync(
             "upload object",
             normalizedObjectKey,

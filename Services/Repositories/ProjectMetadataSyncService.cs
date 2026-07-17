@@ -301,8 +301,8 @@ public sealed class ProjectMetadataSyncService
                 continue;
             }
 
-            // Bound how many attachments are downloaded (and buffered fully in memory) at once across
-            // the whole run. A cancellation while waiting propagates before the try, so no release runs.
+            // Bound how many attachments are downloaded at once across the whole run. A cancellation
+            // while waiting propagates before the try, so no release runs.
             var throttle = backup.Context.DownloadThrottle;
             if (throttle is not null)
             {
@@ -315,13 +315,15 @@ public sealed class ProjectMetadataSyncService
                 var objectKey = buildAttachmentObjectKey(slug, attachment.FileName);
                 var contentType = MimeTypeResolver.ResolveFromFileName(attachment.FileName);
 
-                await backup.ObjectStorageService.UploadStreamAsync(objectKey, stream, contentType, cancellationToken);
+                var knownLength = AttachmentDownloader.TryGetKnownLength(stream);
+
+                await backup.ObjectStorageService.UploadStreamAsync(objectKey, stream, contentType, knownLength, cancellationToken);
 
                 attachment.StorageKey = objectKey;
                 attachment.ContentType = contentType;
-                // The attachment is streamed (non-seekable), so its length is not known here; keep the
-                // provider-reported size (set for release assets) rather than overwriting it with null.
-                attachment.SizeBytes = stream.CanSeek ? stream.Length : attachment.SizeBytes;
+                // Prefer the length the server declared; fall back to the provider-reported size (set for
+                // release assets). The stream itself cannot answer — it is not seekable.
+                attachment.SizeBytes = knownLength ?? attachment.SizeBytes;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

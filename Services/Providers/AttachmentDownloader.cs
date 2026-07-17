@@ -18,6 +18,16 @@ internal static class AttachmentDownloader
     private const int MaxRedirects = 5;
 
     /// <summary>
+    /// The Content-Length declared for a stream returned by <see cref="OpenStreamAsync"/>, or null when
+    /// the server did not declare one (a chunked response) or the stream came from elsewhere. Lets the
+    /// storage layer pick a single-request upload for a small attachment instead of a multipart one.
+    /// </summary>
+    public static long? TryGetKnownLength(Stream stream)
+    {
+        return (stream as CappedAttachmentStream)?.KnownLength;
+    }
+
+    /// <summary>
     /// Opens an attachment as a streaming, size-capped read that the caller uploads straight to storage
     /// without ever buffering the whole file in memory. The returned stream owns <paramref name="client"/>
     /// and the HTTP response and disposes both when it is disposed, so the caller must dispose the stream
@@ -42,7 +52,7 @@ internal static class AttachmentDownloader
             }
 
             var source = await response.Content.ReadAsStreamAsync(cancellationToken);
-            return new CappedAttachmentStream(source, response, client, MaxAttachmentBytes);
+            return new CappedAttachmentStream(source, response, client, MaxAttachmentBytes, declaredLength);
         }
         catch
         {
@@ -240,13 +250,24 @@ internal static class AttachmentDownloader
         private readonly long _maxBytes;
         private long _totalRead;
 
-        public CappedAttachmentStream(Stream inner, HttpResponseMessage response, HttpClient ownedClient, long maxBytes)
+        public CappedAttachmentStream(
+            Stream inner,
+            HttpResponseMessage response,
+            HttpClient ownedClient,
+            long maxBytes,
+            long? knownLength)
         {
             _inner = inner;
             _response = response;
             _ownedClient = ownedClient;
             _maxBytes = maxBytes;
+            KnownLength = knownLength;
         }
+
+        // The Content-Length the server declared, when it declared one. Distinct from Length, which stays
+        // unsupported because the stream is not seekable: this is a hint for choosing an upload strategy,
+        // not a guarantee about the bytes that will actually arrive.
+        public long? KnownLength { get; }
 
         public override bool CanRead => true;
         public override bool CanSeek => false;
