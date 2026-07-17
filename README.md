@@ -46,7 +46,7 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | Protocol | Status |
 |---|---|
 | HTTP / HTTPS | ✅ |
-| SSH | 🚧 |
+| SSH | ❌ |
 
 ## Quick Start
 
