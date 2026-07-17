@@ -313,7 +313,9 @@ public sealed class GitHubRepositoryProviderClient
             return DefaultApiBaseUrl;
         }
 
-        var trimmed = configuredBaseUrl.Trim().TrimEnd('/');
+        // Share the "clean the configured base URL" normalization with the other providers; the GitHub
+        // /api/v3 vs api.github.com suffix handling below stays provider-specific.
+        var trimmed = ResolveBaseUrl(configuredBaseUrl, DefaultApiBaseUrl);
         if (trimmed.Contains("/api/", StringComparison.OrdinalIgnoreCase))
         {
             return trimmed;
