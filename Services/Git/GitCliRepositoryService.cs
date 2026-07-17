@@ -133,14 +133,41 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
             throwOnFailure: true);
     }
 
-    private static Task FetchLfsAsync(string localPath, string remoteUrl, GitCredential? credential, CancellationToken cancellationToken)
+    private static async Task FetchLfsAsync(string localPath, string remoteUrl, GitCredential? credential, CancellationToken cancellationToken)
     {
-        return ExecuteGitAsync(
+        var result = await ExecuteGitAsync(
             ["-C", localPath, "lfs", "fetch", "--all"],
             credential,
             credentialScopeUrl: remoteUrl,
             cancellationToken,
-            throwOnFailure: true);
+            throwOnFailure: false);
+
+        if (result.ExitCode == 0)
+        {
+            return;
+        }
+
+        // A remote can have Git LFS turned off entirely, in which case the batch API declines and git-lfs
+        // exits non-zero. That is an expected state, not a backup failure — the repository simply has no
+        // LFS objects to mirror — so record it as skipped and let the rest of the snapshot proceed.
+        if (IsLfsDisabledOnRemote(result.StandardError))
+        {
+            AppLogger.Info(
+                "Skipped Git LFS fetch because it is disabled on the remote. repository={RepositoryUrl}.",
+                remoteUrl);
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"git lfs fetch failed (exit={result.ExitCode}). stdout: {result.StandardOutput}. stderr: {result.StandardError}");
+    }
+
+    // git-lfs answers with "Git LFS is disabled for this repository." (GitHub, GitLab, and other
+    // S3-fronted hosts alike) when a remote has LFS switched off. Match that signal so a disabled remote
+    // is skipped while a genuine transfer failure still aborts the sync.
+    private static bool IsLfsDisabledOnRemote(string standardError)
+    {
+        return standardError.Contains("Git LFS is disabled", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task<CommandResult> ExecuteGitAsync(
