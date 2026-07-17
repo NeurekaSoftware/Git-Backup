@@ -48,6 +48,12 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
                 await SetRemoteUrlAsync(localPath, remoteUrl, credential, cancellationToken);
                 await FetchAsync(localPath, remoteUrl, credential, cancellationToken);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // A shutdown is not a corrupt mirror. Re-cloning here would delete the cached mirror and
+                // then fail on the same cancelled token, leaving nothing behind.
+                throw;
+            }
             catch (Exception exception)
             {
                 AppLogger.Warn(
