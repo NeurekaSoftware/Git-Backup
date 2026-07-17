@@ -143,6 +143,13 @@ public sealed class RepositorySyncService
         AppLogger.Info("Provider repository discovery started. provider={Provider}.", repository.Provider);
         var providerClient = _providerFactory.Resolve(repository.Provider);
 
+        if (repository.IncludeSnippets == true && !providerClient.SupportsSnippets)
+        {
+            AppLogger.Warn(
+                "Provider does not support gists or snippets, so includeSnippets is ignored. provider={Provider}.",
+                repository.Provider);
+        }
+
         IReadOnlyList<DiscoveredRepository> discoveredRepositories;
         try
         {

@@ -14,6 +14,9 @@ public sealed class ForgejoRepositoryProviderClient
 
     public string Provider => "forgejo";
 
+    // Forgejo has no gists/snippets API, so includeSnippets cannot be honored here.
+    public bool SupportsSnippets => false;
+
     public bool SupportsIssues => true;
 
     public bool SupportsMergeRequests => true;
@@ -35,30 +38,30 @@ public sealed class ForgejoRepositoryProviderClient
         var baseUrl = ResolveApiBaseUrl(repository.BaseUrl);
         using var client = CreateAuthenticatedClient(credential);
 
-        var ownedWalk = CollectAsync(
-            client,
-            page => $"{baseUrl}/user/repos?affiliation=owner&limit={PageSize}&page={page}",
-            item => MapGiteaRepository(item, isStarred: false),
-            PageIsFull(PageSize),
-            cancellationToken);
-
-        if (repository.IncludeStarred != true)
+        // The walks hit independent endpoints, so they run concurrently over the pooled handler and are
+        // merged owned-first by MergeDiscoveryWalksAsync.
+        var walks = new List<Task<List<DiscoveredRepository>>>
         {
-            return await ownedWalk;
+            CollectAsync(
+                client,
+                page => $"{baseUrl}/user/repos?affiliation=owner&limit={PageSize}&page={page}",
+                item => MapGiteaRepository(item, isStarred: false),
+                PageIsFull(PageSize),
+                cancellationToken)
+        };
+
+        if (repository.IncludeStarred == true)
+        {
+            AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
+            walks.Add(CollectAsync(
+                client,
+                page => $"{baseUrl}/user/starred?limit={PageSize}&page={page}",
+                item => MapGiteaRepository(item, isStarred: true),
+                PageIsFull(PageSize),
+                cancellationToken));
         }
 
-        // The owned and starred walks hit independent endpoints, so let them run concurrently.
-        AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
-        var starredWalk = CollectAsync(
-            client,
-            page => $"{baseUrl}/user/starred?limit={PageSize}&page={page}",
-            item => MapGiteaRepository(item, isStarred: true),
-            PageIsFull(PageSize),
-            cancellationToken);
-
-        var owned = await ownedWalk;
-        var starred = await starredWalk;
-        return DistinctByCloneUrl(owned.Concat(starred));
+        return await MergeDiscoveryWalksAsync(walks);
     }
 
     public async IAsyncEnumerable<BackedUpIssue> ListIssuesAsync(

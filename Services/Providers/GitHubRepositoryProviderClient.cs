@@ -26,6 +26,8 @@ public sealed class GitHubRepositoryProviderClient
 
     public string Provider => "github";
 
+    public bool SupportsSnippets => true;
+
     public bool SupportsIssues => true;
 
     public bool SupportsMergeRequests => true;
@@ -47,8 +49,8 @@ public sealed class GitHubRepositoryProviderClient
         var baseUrl = ResolveGitHubApiBaseUrl(repository.BaseUrl);
         using var client = CreateAuthenticatedClient(credential);
 
-        // The walks hit independent endpoints, so run them concurrently over the pooled handler and
-        // merge in a stable order (owned first) — DistinctByCloneUrl keeps the first occurrence.
+        // The walks hit independent endpoints, so they run concurrently over the pooled handler and are
+        // merged owned-first by MergeDiscoveryWalksAsync.
         var walks = new List<Task<List<DiscoveredRepository>>>
         {
             CollectAsync(
@@ -92,8 +94,7 @@ public sealed class GitHubRepositoryProviderClient
             }
         }
 
-        var walkResults = await Task.WhenAll(walks);
-        return DistinctByCloneUrl(walkResults.SelectMany(walk => walk));
+        return await MergeDiscoveryWalksAsync(walks);
     }
 
     public async IAsyncEnumerable<BackedUpIssue> ListIssuesAsync(

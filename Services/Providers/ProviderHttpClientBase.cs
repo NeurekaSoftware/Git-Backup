@@ -364,6 +364,19 @@ public abstract class ProviderHttpClientBase
     }
 
     /// <summary>
+    /// Runs the discovery walks concurrently and merges their results in the order given, keeping the
+    /// first occurrence of each clone URL. Callers list the owned walk first, so a repository that is
+    /// both owned and starred keeps its owned entry — which is what decides whether its issues, merge
+    /// requests, and releases get backed up at all.
+    /// </summary>
+    protected static async Task<IReadOnlyList<DiscoveredRepository>> MergeDiscoveryWalksAsync(
+        IEnumerable<Task<List<DiscoveredRepository>>> walks)
+    {
+        var results = await Task.WhenAll(walks);
+        return DistinctByCloneUrl(results.SelectMany(walk => walk));
+    }
+
+    /// <summary>
     /// Decides whether a paginated endpoint has another page, given the response and the number of
     /// raw items on the page just read.
     /// </summary>
