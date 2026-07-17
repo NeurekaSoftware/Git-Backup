@@ -128,15 +128,15 @@ internal static class AttachmentDownloader
     {
         var candidate = fileName.Trim();
 
+        // Stripping the path and decoding escapes is specific to a file name; the normalization that
+        // follows is the shared one every storage-key segment goes through.
         var lastSeparator = candidate.LastIndexOfAny(['/', '\\']);
         if (lastSeparator >= 0)
         {
             candidate = candidate[(lastSeparator + 1)..];
         }
 
-        candidate = Uri.UnescapeDataString(candidate);
-        var sanitized = GitRepositoryUrl.InvalidStorageSegmentCharacters.Replace(candidate, "-").Trim('-', '.');
-        return string.IsNullOrWhiteSpace(sanitized) ? "file" : sanitized;
+        return GitRepositoryUrl.NormalizeStorageSegment(Uri.UnescapeDataString(candidate), "file");
     }
 
     /// <summary>

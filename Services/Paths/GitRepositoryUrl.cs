@@ -14,6 +14,29 @@ public static class GitRepositoryUrl
     public static readonly Regex InvalidStorageSegmentCharacters = new("[^A-Za-z0-9._-]+", RegexOptions.Compiled);
 
     /// <summary>
+    /// Normalizes an untrusted value into a single safe storage-key segment: replaces anything outside
+    /// <see cref="InvalidStorageSegmentCharacters"/> with '-', then trims leading and trailing '-' and
+    /// '.' so a value like "." or ".." collapses to <paramref name="fallback"/> rather than surviving
+    /// into a key as a path-traversal token.
+    /// </summary>
+    /// <remarks>
+    /// The single implementation behind every storage-segment and file-name normalization. A forge
+    /// controls these values, so this is the choke point that stops one from injecting extra key
+    /// segments; keeping it in one place means a hardening change here cannot miss a caller.
+    /// </remarks>
+    public static string NormalizeStorageSegment(string value, string fallback, bool lowercase = false)
+    {
+        var candidate = value.Trim();
+        if (lowercase)
+        {
+            candidate = candidate.ToLowerInvariant();
+        }
+
+        var sanitized = InvalidStorageSegmentCharacters.Replace(candidate, "-").Trim('-', '.');
+        return string.IsNullOrWhiteSpace(sanitized) ? fallback : sanitized;
+    }
+
+    /// <summary>
     /// Removes a trailing <c>.git</c> suffix (case-insensitive) from a repository URL or name.
     /// Returns the value unchanged when no such suffix is present.
     /// </summary>

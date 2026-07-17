@@ -45,10 +45,6 @@ public static class RepositoryPathParser
 
     private static string NormalizeSegment(string value)
     {
-        // Trim leading/trailing '-' and '.' (matching AttachmentDownloader.SanitizeFileName) so a
-        // segment like "." or ".." collapses to the safe fallback below instead of surviving into a
-        // storage key as a path-traversal token.
-        var normalized = GitRepositoryUrl.InvalidStorageSegmentCharacters.Replace(value.Trim().ToLowerInvariant(), "-").Trim('-', '.');
-        return string.IsNullOrWhiteSpace(normalized) ? "unknown" : normalized;
+        return GitRepositoryUrl.NormalizeStorageSegment(value, "unknown", lowercase: true);
     }
 }

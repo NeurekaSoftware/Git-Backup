@@ -4,8 +4,14 @@ public static class StorageKeyBuilder
 {
     public const string ArchiveObjectNameSuffix = "_repo.tar.gz";
     public const string RepositoryMetadataObjectName = "metadata.json";
-    public const string RepositoriesPrefix = "repositories/";
-    public const string SnippetsPrefix = "snippets/";
+
+    // The two storage roots. Retention scans by these prefixes and the builders below write them, so
+    // both are derived from one constant per root: a literal here and a constant there would agree only
+    // by spelling, and a change to one would leave retention scanning a prefix nothing is written under.
+    public const string RepositoriesRoot = "repositories";
+    public const string SnippetsRoot = "snippets";
+    public const string RepositoriesPrefix = RepositoriesRoot + "/";
+    public const string SnippetsPrefix = SnippetsRoot + "/";
 
     public const string IssuesCollectionSegment = "issues";
     public const string MergeRequestsCollectionSegment = "merge-requests";
@@ -17,7 +23,7 @@ public static class StorageKeyBuilder
     {
         var segments = new List<string>
         {
-            "repositories",
+            RepositoriesRoot,
             "provider",
             provider.Trim().ToLowerInvariant()
         };
@@ -34,7 +40,7 @@ public static class StorageKeyBuilder
     {
         var segments = new List<string>
         {
-            "snippets",
+            SnippetsRoot,
             "provider",
             provider.Trim().ToLowerInvariant(),
             SanitizeIdentifier(identifier)
@@ -54,19 +60,18 @@ public static class StorageKeyBuilder
 
     // A snippet/gist id comes straight from the provider's JSON; a hostile self-hosted forge could
     // return one containing '/' (or '..') and steer this resource's objects under a different key
-    // prefix. Strip anything outside the safe segment charset so a provider-supplied id can never
-    // inject extra key segments, matching the normalization applied to repository path segments.
+    // prefix. The shared normalizer strips anything outside the safe segment charset, so a
+    // provider-supplied id can never inject extra key segments.
     private static string SanitizeIdentifier(string identifier)
     {
-        var sanitized = GitRepositoryUrl.InvalidStorageSegmentCharacters.Replace(identifier.Trim(), "-").Trim('-', '.');
-        return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
+        return GitRepositoryUrl.NormalizeStorageSegment(identifier, "unknown");
     }
 
     public static string BuildUrlRepositoryPrefix(RepositoryPathInfo repository)
     {
         var segments = new List<string>
         {
-            "repositories",
+            RepositoriesRoot,
             "url",
             repository.FullDomain
         };
