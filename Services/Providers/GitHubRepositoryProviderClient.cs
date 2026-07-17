@@ -103,24 +103,25 @@ public sealed class GitHubRepositoryProviderClient
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectWithCommentsAsync(
+            // One repo-wide comments fetch (O(total/100) requests) instead of one paginated fetch per
+            // issue: GitHub's issue-comments endpoint returns every issue and PR comment, each carrying
+            // the issue_url it belongs to, so they can be grouped by number in memory.
+            var commentsByNumber = await FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken);
+
+            var issues = await CollectAsync(
                 client,
-                context.Concurrency,
                 page => $"{baseUrl}/repos/{repositoryPath}/issues?state=all&per_page={PageSize}&page={page}",
                 MapIssue,
                 PageIsFull(PageSize),
-                async (issue, token) =>
-                {
-                    issue.Comments = await CollectAsync(
-                        client,
-                        page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?per_page={PageSize}&page={page}",
-                        MapGiteaComment,
-                        PageIsFull(PageSize),
-                        token);
-
-                    issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
-                },
                 cancellationToken);
+
+            foreach (var issue in issues)
+            {
+                issue.Comments = commentsByNumber.TryGetValue(issue.Number, out var comments) ? comments : [];
+                issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
+            }
+
+            return issues;
         }
     }
 
@@ -137,26 +138,25 @@ public sealed class GitHubRepositoryProviderClient
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectWithCommentsAsync(
+            // Pull requests are issues on GitHub, so their discussion comments live on the same
+            // repo-wide issue-comments endpoint; fetch it once and group by number rather than paging
+            // per pull request.
+            var commentsByNumber = await FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken);
+
+            var pulls = await CollectAsync(
                 client,
-                context.Concurrency,
                 page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&per_page={PageSize}&page={page}",
                 MapGiteaPullRequest,
                 PageIsFull(PageSize),
-                async (pull, token) =>
-                {
-                    // Pull requests are issues on GitHub, so their discussion comments live on the
-                    // issue comments endpoint.
-                    pull.Comments = await CollectAsync(
-                        client,
-                        page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?per_page={PageSize}&page={page}",
-                        MapGiteaComment,
-                        PageIsFull(PageSize),
-                        token);
-
-                    pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
-                },
                 cancellationToken);
+
+            foreach (var pull in pulls)
+            {
+                pull.Comments = commentsByNumber.TryGetValue(pull.Number, out var comments) ? comments : [];
+                pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
+            }
+
+            return pulls;
         }
     }
 
@@ -248,6 +248,58 @@ public sealed class GitHubRepositoryProviderClient
         var withoutQuery = url.Split('?', 2)[0];
         var lastSlash = withoutQuery.LastIndexOf('/');
         return lastSlash >= 0 ? withoutQuery[(lastSlash + 1)..] : withoutQuery;
+    }
+
+    // Fetches every issue and PR comment for the repo in one paginated walk and groups them by the
+    // issue/PR number parsed from each comment's issue_url. Requested oldest-first so each thread stays
+    // in chronological order.
+    private static async Task<Dictionary<long, List<BackedUpComment>>> FetchIssueCommentsByNumberAsync(
+        HttpClient client,
+        string baseUrl,
+        string repositoryPath,
+        CancellationToken cancellationToken)
+    {
+        var commentsByNumber = new Dictionary<long, List<BackedUpComment>>();
+
+        // CollectAsync walks pages sequentially, so the dictionary is only ever mutated on one thread.
+        await CollectAsync(
+            client,
+            page => $"{baseUrl}/repos/{repositoryPath}/issues/comments?sort=created&direction=asc&per_page={PageSize}&page={page}",
+            item =>
+            {
+                var comment = MapGiteaComment(item);
+                var number = ParseIssueNumber(GetStringOrNull(item, "issue_url"));
+                if (comment is not null && number is not null)
+                {
+                    if (!commentsByNumber.TryGetValue(number.Value, out var thread))
+                    {
+                        thread = [];
+                        commentsByNumber[number.Value] = thread;
+                    }
+
+                    thread.Add(comment);
+                }
+
+                return comment;
+            },
+            PageIsFull(PageSize),
+            cancellationToken);
+
+        return commentsByNumber;
+    }
+
+    // Extracts the trailing issue/PR number from a GitHub issue_url such as
+    // https://api.github.com/repos/{owner}/{repo}/issues/{number}.
+    private static long? ParseIssueNumber(string? issueUrl)
+    {
+        if (string.IsNullOrEmpty(issueUrl))
+        {
+            return null;
+        }
+
+        var lastSlash = issueUrl.LastIndexOf('/');
+        var segment = lastSlash >= 0 ? issueUrl[(lastSlash + 1)..] : issueUrl;
+        return long.TryParse(segment, out var number) ? number : null;
     }
 
     private static string ResolveGitHubApiBaseUrl(string? configuredBaseUrl)
