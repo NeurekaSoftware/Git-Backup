@@ -26,9 +26,18 @@ internal sealed class NoSilentSuccessHandler : DelegatingHandler
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        // Buffer any request body once so a 429 retry can re-send it. HttpClient consumes (and disposes)
+        // the request content on each send, and upload bodies — multipart parts and PUT streams — are
+        // single-use, so re-sending the original request after a 429 would fail on a spent body. We send
+        // a fresh clone with a re-readable body each attempt and never reuse the original request.
+        byte[]? bufferedBody = request.Content is null
+            ? null
+            : await request.Content.ReadAsByteArrayAsync(cancellationToken);
+
         for (var attempt = 1; ; attempt++)
         {
-            var response = await base.SendAsync(request, cancellationToken);
+            using var attemptRequest = CloneRequest(request, bufferedBody);
+            var response = await base.SendAsync(attemptRequest, cancellationToken);
             var statusCode = (int)response.StatusCode;
 
             if (statusCode == 429 && attempt < MaxAttempts)
@@ -72,5 +81,43 @@ internal sealed class NoSilentSuccessHandler : DelegatingHandler
     private static bool IsRealSuccess(int statusCode)
     {
         return statusCode is (>= 200 and <= 299) or 304;
+    }
+
+    // Builds a fresh, independently-sendable copy of the request for one attempt: same method, URI,
+    // version, headers, and options, with a re-readable body rebuilt from the buffered bytes (and the
+    // original content headers, e.g. Content-Type / Content-MD5, preserved for the S3 signature).
+    private static HttpRequestMessage CloneRequest(HttpRequestMessage request, byte[]? bufferedBody)
+    {
+        var clone = new HttpRequestMessage(request.Method, request.RequestUri)
+        {
+            Version = request.Version,
+            VersionPolicy = request.VersionPolicy
+        };
+
+        foreach (var header in request.Headers)
+        {
+            clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
+
+        foreach (var option in request.Options)
+        {
+            clone.Options.Set(new HttpRequestOptionsKey<object?>(option.Key), option.Value);
+        }
+
+        if (bufferedBody is not null)
+        {
+            var content = new ByteArrayContent(bufferedBody);
+            if (request.Content is not null)
+            {
+                foreach (var header in request.Content.Headers)
+                {
+                    content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+            }
+
+            clone.Content = content;
+        }
+
+        return clone;
     }
 }
