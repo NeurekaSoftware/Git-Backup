@@ -11,6 +11,7 @@ public sealed class GitLabRepositoryProviderClient
     : ProviderHttpClientBase, IRepositoryProviderClient, IProjectMetadataProviderClient
 {
     private const string DefaultBaseUrl = "https://gitlab.com";
+    private const int PageSize = 100;
 
     // GitLab renders upload references as /uploads/{32-hex-sha}/{filename} inside issue, merge
     // request, and note bodies. The filename runs until whitespace or a markdown/HTML delimiter.
@@ -33,7 +34,7 @@ public sealed class GitLabRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
@@ -47,7 +48,7 @@ public sealed class GitLabRepositoryProviderClient
         {
             CollectAsync(
                 client,
-                page => $"{baseUrl}/projects?owned=true&simple=true&per_page=100&page={page}",
+                page => $"{baseUrl}/projects?owned=true&simple=true&per_page={PageSize}&page={page}",
                 item => MapProject(item, isStarred: false),
                 HasNextPage,
                 cancellationToken)
@@ -58,7 +59,7 @@ public sealed class GitLabRepositoryProviderClient
             AppLogger.Debug("Including starred repositories. provider={Provider}.", Provider);
             walks.Add(CollectAsync(
                 client,
-                page => $"{baseUrl}/projects?starred=true&simple=true&per_page=100&page={page}",
+                page => $"{baseUrl}/projects?starred=true&simple=true&per_page={PageSize}&page={page}",
                 item => MapProject(item, isStarred: true),
                 HasNextPage,
                 cancellationToken));
@@ -70,7 +71,7 @@ public sealed class GitLabRepositoryProviderClient
             AppLogger.Debug("Including snippets. provider={Provider}.", Provider);
             walks.Add(CollectAsync(
                 client,
-                page => $"{baseUrl}/snippets?per_page=100&page={page}",
+                page => $"{baseUrl}/snippets?per_page={PageSize}&page={page}",
                 MapSnippet,
                 HasNextPage,
                 cancellationToken));
@@ -85,33 +86,33 @@ public sealed class GitLabRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
 
-        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
-        var projectId = ResolveProjectIdentifier(context);
-        using var client = CreateAuthenticatedClient(credential);
+        var (baseUrl, client, projectId) = CreateProjectClient(context, credential);
+        using (client)
+        {
+            return await CollectWithCommentsAsync(
+                client,
+                context.Concurrency,
+                page => $"{baseUrl}/projects/{projectId}/issues?per_page={PageSize}&page={page}",
+                MapIssue,
+                HasNextPage,
+                async (issue, token) =>
+                {
+                    issue.Comments = await CollectAsync(
+                        client,
+                        page => $"{baseUrl}/projects/{projectId}/issues/{issue.Number}/notes?per_page={PageSize}&sort=asc&page={page}",
+                        MapNote,
+                        HasNextPage,
+                        token);
 
-        return await CollectWithCommentsAsync(
-            client,
-            context.Concurrency,
-            page => $"{baseUrl}/projects/{projectId}/issues?per_page=100&page={page}",
-            MapIssue,
-            HasNextPage,
-            async (issue, token) =>
-            {
-                issue.Comments = await CollectAsync(
-                    client,
-                    page => $"{baseUrl}/projects/{projectId}/issues/{issue.Number}/notes?per_page=100&sort=asc&page={page}",
-                    MapNote,
-                    HasNextPage,
-                    token);
-
-                issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
-            },
-            cancellationToken);
+                    issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
+                },
+                cancellationToken);
+        }
     }
 
     public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
@@ -119,33 +120,33 @@ public sealed class GitLabRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
 
-        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
-        var projectId = ResolveProjectIdentifier(context);
-        using var client = CreateAuthenticatedClient(credential);
+        var (baseUrl, client, projectId) = CreateProjectClient(context, credential);
+        using (client)
+        {
+            return await CollectWithCommentsAsync(
+                client,
+                context.Concurrency,
+                page => $"{baseUrl}/projects/{projectId}/merge_requests?per_page={PageSize}&page={page}",
+                MapMergeRequest,
+                HasNextPage,
+                async (mergeRequest, token) =>
+                {
+                    mergeRequest.Comments = await CollectAsync(
+                        client,
+                        page => $"{baseUrl}/projects/{projectId}/merge_requests/{mergeRequest.Number}/notes?per_page={PageSize}&sort=asc&page={page}",
+                        MapNote,
+                        HasNextPage,
+                        token);
 
-        return await CollectWithCommentsAsync(
-            client,
-            context.Concurrency,
-            page => $"{baseUrl}/projects/{projectId}/merge_requests?per_page=100&page={page}",
-            MapMergeRequest,
-            HasNextPage,
-            async (mergeRequest, token) =>
-            {
-                mergeRequest.Comments = await CollectAsync(
-                    client,
-                    page => $"{baseUrl}/projects/{projectId}/merge_requests/{mergeRequest.Number}/notes?per_page=100&sort=asc&page={page}",
-                    MapNote,
-                    HasNextPage,
-                    token);
-
-                mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
-            },
-            cancellationToken);
+                    mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
+                },
+                cancellationToken);
+        }
     }
 
     public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
@@ -153,22 +154,22 @@ public sealed class GitLabRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
 
-        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
-        var projectId = ResolveProjectIdentifier(context);
+        var (baseUrl, client, projectId) = CreateProjectClient(context, credential);
         var instanceHost = ResolveInstanceHost(context);
-        using var client = CreateAuthenticatedClient(credential);
-
-        return await CollectAsync(
-            client,
-            page => $"{baseUrl}/projects/{projectId}/releases?per_page=100&page={page}",
-            item => MapRelease(item, instanceHost),
-            HasNextPage,
-            cancellationToken);
+        using (client)
+        {
+            return await CollectAsync(
+                client,
+                page => $"{baseUrl}/projects/{projectId}/releases?per_page={PageSize}&page={page}",
+                item => MapRelease(item, instanceHost),
+                HasNextPage,
+                cancellationToken);
+        }
     }
 
     // GitLab paginates via the X-Next-Page response header rather than a full-page heuristic.
@@ -339,7 +340,7 @@ public sealed class GitLabRepositoryProviderClient
 
             attachments.Add(new BackedUpAttachment
             {
-                FileName = $"{AttachmentDownloader.ShortHash(reference)}-{AttachmentDownloader.SanitizeFileName(name)}",
+                FileName = AttachmentDownloader.BuildStorageFileName(reference, name),
                 OriginalPath = reference,
                 DownloadUrl = fetchUrl,
                 Downloadable = IsInstanceHost(url ?? directUrl!, instanceHost)
@@ -393,6 +394,15 @@ public sealed class GitLabRepositoryProviderClient
         {
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", credential.ApiKey.Trim());
         }
+    }
+
+    // The shared preamble every metadata method opens with: resolve the API base URL, create the
+    // authenticated client, and resolve the project addressing token (numeric id or url-encoded path).
+    private (string BaseUrl, HttpClient Client, string ProjectId) CreateProjectClient(
+        ProjectMetadataContext context,
+        CredentialConfig credential)
+    {
+        return (ResolveApiBaseUrl(context.BaseUrl), CreateAuthenticatedClient(credential), ResolveProjectIdentifier(context));
     }
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)

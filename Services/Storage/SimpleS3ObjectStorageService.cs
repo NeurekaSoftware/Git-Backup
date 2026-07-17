@@ -24,13 +24,16 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 {
     private const string ArchiveContentType = "application/gzip";
     private const string JsonContentType = "application/json";
-    private const string DefaultContentType = "application/octet-stream";
     private const int MultipartPartSizeBytes = 16 * 1024 * 1024;
     private const int MultipartParallelParts = 4;
 
     private readonly ServiceProvider _serviceProvider;
     private readonly ISimpleClient _client;
     private readonly string _bucket;
+
+    // A new storage client is built every run, so this warn-once latch keeps an insecure-endpoint
+    // notice from repeating on every cron cycle.
+    private static int _insecureEndpointWarned;
 
     public SimpleS3ObjectStorageService(StorageConfig storage)
     {
@@ -190,7 +193,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             throw new ArgumentException("Object key is required.", nameof(objectKey));
         }
 
-        var resolvedContentType = string.IsNullOrWhiteSpace(contentType) ? DefaultContentType : contentType;
+        var resolvedContentType = string.IsNullOrWhiteSpace(contentType) ? MimeTypeResolver.DefaultContentType : contentType;
         AppLogger.Debug(
             "Uploading object. objectKey={ObjectKey}, contentType={ContentType}.",
             normalizedObjectKey,
@@ -405,8 +408,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             _ => SignatureMode.FullSignature
         };
     }
-
-    private static int _insecureEndpointWarned;
 
     private static void WarnOnceIfInsecureEndpoint(string endpoint)
     {

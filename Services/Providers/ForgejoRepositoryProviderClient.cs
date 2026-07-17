@@ -26,7 +26,7 @@ public sealed class ForgejoRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
@@ -65,32 +65,32 @@ public sealed class ForgejoRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
 
-        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
-        var repositoryPath = ResolveRepositoryPath(context);
-        using var client = CreateAuthenticatedClient(credential);
+        var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
+        using (client)
+        {
+            return await CollectWithCommentsAsync(
+                client,
+                context.Concurrency,
+                page => $"{baseUrl}/repos/{repositoryPath}/issues?type=issues&state=all&limit={PageSize}&page={page}",
+                MapIssue,
+                PageIsFull(PageSize),
+                async (issue, token) =>
+                {
+                    var (comments, commentAttachments) = await FetchCommentsAsync(
+                        client,
+                        page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?limit={PageSize}&page={page}",
+                        token);
 
-        return await CollectWithCommentsAsync(
-            client,
-            context.Concurrency,
-            page => $"{baseUrl}/repos/{repositoryPath}/issues?type=issues&state=all&limit={PageSize}&page={page}",
-            MapIssue,
-            PageIsFull(PageSize),
-            async (issue, token) =>
-            {
-                var (comments, commentAttachments) = await FetchCommentsAsync(
-                    client,
-                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{issue.Number}/comments?limit={PageSize}&page={page}",
-                    token);
-
-                issue.Comments = comments;
-                issue.Attachments = MergeAttachments(issue.Attachments, commentAttachments);
-            },
-            cancellationToken);
+                    issue.Comments = comments;
+                    issue.Attachments = MergeAttachments(issue.Attachments, commentAttachments);
+                },
+                cancellationToken);
+        }
     }
 
     public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
@@ -98,33 +98,33 @@ public sealed class ForgejoRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
 
-        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
-        var repositoryPath = ResolveRepositoryPath(context);
-        using var client = CreateAuthenticatedClient(credential);
+        var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
+        using (client)
+        {
+            return await CollectWithCommentsAsync(
+                client,
+                context.Concurrency,
+                page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&limit={PageSize}&page={page}",
+                MapPullRequest,
+                PageIsFull(PageSize),
+                async (pull, token) =>
+                {
+                    // Pull requests share the issue comment thread in the Gitea/Forgejo API.
+                    var (comments, commentAttachments) = await FetchCommentsAsync(
+                        client,
+                        page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?limit={PageSize}&page={page}",
+                        token);
 
-        return await CollectWithCommentsAsync(
-            client,
-            context.Concurrency,
-            page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&limit={PageSize}&page={page}",
-            MapPullRequest,
-            PageIsFull(PageSize),
-            async (pull, token) =>
-            {
-                // Pull requests share the issue comment thread in the Gitea/Forgejo API.
-                var (comments, commentAttachments) = await FetchCommentsAsync(
-                    client,
-                    page => $"{baseUrl}/repos/{repositoryPath}/issues/{pull.Number}/comments?limit={PageSize}&page={page}",
-                    token);
-
-                pull.Comments = comments;
-                pull.Attachments = MergeAttachments(pull.Attachments, commentAttachments);
-            },
-            cancellationToken);
+                    pull.Comments = comments;
+                    pull.Attachments = MergeAttachments(pull.Attachments, commentAttachments);
+                },
+                cancellationToken);
+        }
     }
 
     public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
@@ -132,21 +132,21 @@ public sealed class ForgejoRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
 
-        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
-        var repositoryPath = ResolveRepositoryPath(context);
-        using var client = CreateAuthenticatedClient(credential);
-
-        return await CollectAsync(
-            client,
-            page => $"{baseUrl}/repos/{repositoryPath}/releases?limit={PageSize}&page={page}",
-            MapGiteaRelease,
-            PageIsFull(PageSize),
-            cancellationToken);
+        var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
+        using (client)
+        {
+            return await CollectAsync(
+                client,
+                page => $"{baseUrl}/repos/{repositoryPath}/releases?limit={PageSize}&page={page}",
+                MapGiteaRelease,
+                PageIsFull(PageSize),
+                cancellationToken);
+        }
     }
 
     private static async Task<(List<BackedUpComment> Comments, List<BackedUpAttachment> Attachments)> FetchCommentsAsync(
@@ -204,6 +204,15 @@ public sealed class ForgejoRepositoryProviderClient
         {
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", credential.ApiKey.Trim());
         }
+    }
+
+    // The shared preamble every metadata method opens with: resolve the API base URL, create the
+    // authenticated client, and resolve the owner/repo path.
+    private (string BaseUrl, HttpClient Client, string RepositoryPath) CreateProjectClient(
+        ProjectMetadataContext context,
+        CredentialConfig credential)
+    {
+        return (ResolveApiBaseUrl(context.BaseUrl), CreateAuthenticatedClient(credential), ResolveRepositoryPath(context));
     }
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)

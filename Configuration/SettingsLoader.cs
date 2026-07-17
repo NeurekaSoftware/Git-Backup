@@ -322,44 +322,26 @@ public sealed class SettingsLoader
             errors.Add($"repositories[{index}].baseUrl is not allowed when mode is url.");
         }
 
-        if (repository.IncludeStarred == true)
+        // Every include* flag is provider-only, so none are allowed in url mode. Drive the checks from
+        // one table so a new flag needs a single row here rather than another copied block.
+        var urlDisallowedFlags = new (string Name, bool? Value)[]
         {
-            errors.Add($"repositories[{index}].includeStarred is not allowed when mode is url.");
-        }
+            ("includeStarred", repository.IncludeStarred),
+            ("includeSnippets", repository.IncludeSnippets),
+            ("includeIssues", repository.IncludeIssues),
+            ("includeIssueArtifacts", repository.IncludeIssueArtifacts),
+            ("includeMergeRequests", repository.IncludeMergeRequests),
+            ("includeMergeRequestsArtifacts", repository.IncludeMergeRequestsArtifacts),
+            ("includeReleases", repository.IncludeReleases),
+            ("includeReleaseArtifacts", repository.IncludeReleaseArtifacts)
+        };
 
-        if (repository.IncludeSnippets == true)
+        foreach (var (name, value) in urlDisallowedFlags)
         {
-            errors.Add($"repositories[{index}].includeSnippets is not allowed when mode is url.");
-        }
-
-        if (repository.IncludeIssues == true)
-        {
-            errors.Add($"repositories[{index}].includeIssues is not allowed when mode is url.");
-        }
-
-        if (repository.IncludeIssueArtifacts == true)
-        {
-            errors.Add($"repositories[{index}].includeIssueArtifacts is not allowed when mode is url.");
-        }
-
-        if (repository.IncludeMergeRequests == true)
-        {
-            errors.Add($"repositories[{index}].includeMergeRequests is not allowed when mode is url.");
-        }
-
-        if (repository.IncludeMergeRequestsArtifacts == true)
-        {
-            errors.Add($"repositories[{index}].includeMergeRequestsArtifacts is not allowed when mode is url.");
-        }
-
-        if (repository.IncludeReleases == true)
-        {
-            errors.Add($"repositories[{index}].includeReleases is not allowed when mode is url.");
-        }
-
-        if (repository.IncludeReleaseArtifacts == true)
-        {
-            errors.Add($"repositories[{index}].includeReleaseArtifacts is not allowed when mode is url.");
+            if (value == true)
+            {
+                errors.Add($"repositories[{index}].{name} is not allowed when mode is url.");
+            }
         }
 
         if (string.IsNullOrWhiteSpace(repository.Credential))

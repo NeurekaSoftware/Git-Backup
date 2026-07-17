@@ -4,7 +4,7 @@ using GitBackup.Services.Repositories;
 
 namespace GitBackup.Services.Scheduling;
 
-public sealed class ScheduledJobRunner
+public sealed class ScheduledJobRunner : IDisposable
 {
     private readonly Func<Settings> _getSettings;
     private readonly RepositorySyncService _repositorySyncService;
@@ -216,6 +216,11 @@ public sealed class ScheduledJobRunner
         {
             _retentionLock.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        _retentionLock.Dispose();
     }
 
     private enum DelayUntilUtcResult

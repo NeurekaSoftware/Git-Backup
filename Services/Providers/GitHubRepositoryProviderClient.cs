@@ -33,7 +33,7 @@ public sealed class GitHubRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
@@ -95,7 +95,7 @@ public sealed class GitHubRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
@@ -129,7 +129,7 @@ public sealed class GitHubRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
@@ -165,7 +165,7 @@ public sealed class GitHubRepositoryProviderClient
         CredentialConfig credential,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        if (!HasApiKey(credential))
         {
             return [];
         }
@@ -236,7 +236,7 @@ public sealed class GitHubRepositoryProviderClient
             var reference = AttachmentDownloader.RedactUrl(url);
             return new BackedUpAttachment
             {
-                FileName = $"{AttachmentDownloader.ShortHash(reference)}-{AttachmentDownloader.SanitizeFileName(LastPathSegment(reference))}",
+                FileName = AttachmentDownloader.BuildStorageFileName(reference, LastPathSegment(reference)),
                 OriginalPath = reference,
                 DownloadUrl = url
             };

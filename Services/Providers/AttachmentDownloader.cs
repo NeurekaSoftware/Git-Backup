@@ -143,6 +143,16 @@ internal static class AttachmentDownloader
     }
 
     /// <summary>
+    /// Builds a collision-resistant storage-key leaf as <c>{shortHash(hashSeed)}-{sanitized(rawName)}</c>
+    /// — the shared naming convention for downloaded attachments and release assets, so the scheme lives
+    /// in one place instead of being reassembled inline at each call site.
+    /// </summary>
+    public static string BuildStorageFileName(string hashSeed, string rawName)
+    {
+        return $"{ShortHash(hashSeed)}-{SanitizeFileName(rawName)}";
+    }
+
+    /// <summary>
     /// Rejects an attachment URL that is not http(s) or that resolves to a private, loopback, or
     /// link-local address, so a crafted provider response (or a redirect hop) cannot make the
     /// authenticated client reach an internal endpoint (e.g. a cloud metadata service). DNS names are

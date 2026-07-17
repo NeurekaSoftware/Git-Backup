@@ -59,6 +59,15 @@ public abstract class ProviderHttpClientBase
         return client;
     }
 
+    /// <summary>
+    /// True when a credential carries a usable API key. The early-out guard every provider list method
+    /// uses so a blank key never reaches an authenticated request.
+    /// </summary>
+    protected static bool HasApiKey(CredentialConfig credential)
+    {
+        return !string.IsNullOrWhiteSpace(credential.ApiKey);
+    }
+
     // Creates an auth-carrying client that never auto-redirects, so attachment downloads can validate
     // each redirect hop before following it.
     private HttpClient CreateAuthenticatedAttachmentClient(CredentialConfig credential)
@@ -619,7 +628,7 @@ public abstract class ProviderHttpClientBase
 
             attachments.Add(new BackedUpAttachment
             {
-                FileName = $"{AttachmentDownloader.ShortHash(url)}-{AttachmentDownloader.SanitizeFileName(name)}",
+                FileName = AttachmentDownloader.BuildStorageFileName(url, name),
                 OriginalPath = url,
                 DownloadUrl = url,
                 SizeBytes = GetInt64OrNull(asset, "size")

@@ -51,7 +51,7 @@ class Program
 
             var workingRoot = ResolveWorkingRoot();
             Directory.CreateDirectory(workingRoot);
-            AppLogger.Info("Working directory ready: {WorkingRoot}", workingRoot);
+            AppLogger.Info("Working directory ready. workingRoot={WorkingRoot}.", workingRoot);
 
             Func<StorageConfig, IObjectStorageService> objectStorageFactory =
                 storage => new SimpleS3ObjectStorageService(storage);
@@ -67,7 +67,7 @@ class Program
             var projectMetadataSyncService = new ProjectMetadataSyncService(providerFactory);
             var repositorySyncService = new RepositorySyncService(providerFactory, gitRepositoryService, objectStorageFactory, mirrorStore, projectMetadataSyncService);
             var retentionService = new RepositoryRetentionService(objectStorageFactory);
-            var scheduledJobRunner = new ScheduledJobRunner(() => liveSettings.Current, repositorySyncService, retentionService);
+            using var scheduledJobRunner = new ScheduledJobRunner(() => liveSettings.Current, repositorySyncService, retentionService);
 
             using var shutdown = new CancellationTokenSource();
             Console.CancelKeyPress += (_, eventArgs) =>
@@ -120,7 +120,7 @@ class Program
         }
 
         AppLogger.SetMinimumLevel(parsedLevel);
-        AppLogger.Info("Active log level: {LogLevel}", AppLogger.ToConfigValue(parsedLevel));
+        AppLogger.Info("Active log level set. logLevel={LogLevel}.", AppLogger.ToConfigValue(parsedLevel));
     }
 
     private static string ResolveSettingsPath(string[] args)

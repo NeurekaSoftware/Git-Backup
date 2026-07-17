@@ -15,9 +15,14 @@ public enum AppLogLevel
 
 public static class AppLogger
 {
-    private static readonly object Sync = new();
     private static readonly TimeZoneInfo LocalTimeZone = TimeZoneInfo.Local;
-    private static AppLogLevel _minimumLevel = AppLogLevel.Info;
+    private static readonly LoggingLevelSwitch LevelSwitch = new(LogEventLevel.Information);
+
+    // The zone abbreviation has only two possible values for a given local zone (standard vs daylight),
+    // so compute each once at startup instead of rebuilding it (with a StringBuilder and a split) on
+    // every log event.
+    private static readonly string StandardAbbreviation = BuildAbbreviation(LocalTimeZone.StandardName);
+    private static readonly string DaylightAbbreviation = BuildAbbreviation(LocalTimeZone.DaylightName);
 
     public const string DefaultLogLevel = "info";
 
@@ -25,7 +30,16 @@ public static class AppLogger
 
     static AppLogger()
     {
-        ReconfigureLogger(_minimumLevel);
+        // Build the logger once and steer its threshold with a LoggingLevelSwitch, so a settings reload
+        // mutates the level in place rather than swapping and disposing the logger while other threads
+        // are mid-write.
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.ControlledBy(LevelSwitch)
+            .Enrich.With(new TimeZoneEnricher())
+            .WriteTo.Console(
+                outputTemplate:
+                "[{Timestamp:yyyy-MM-dd HH:mm:ss} ({TimeZone})] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+            .CreateLogger();
     }
 
     public static bool TryParseLogLevel(string? value, out AppLogLevel level)
@@ -63,18 +77,15 @@ public static class AppLogger
 
     public static void SetMinimumLevel(AppLogLevel level)
     {
-        lock (Sync)
-        {
-            _minimumLevel = level;
-            ReconfigureLogger(_minimumLevel);
-        }
+        // Mutate the threshold in place — no logger rebuild, so concurrent writers never race a disposed
+        // logger, and a reload that leaves the level unchanged costs nothing.
+        LevelSwitch.MinimumLevel = ToSerilogLevel(level);
     }
 
     public static string FormatTimestamp(DateTimeOffset value)
     {
         var localTime = TimeZoneInfo.ConvertTime(value, LocalTimeZone);
-        var timeZone = GetTimeZoneAbbreviation(localTime);
-        return $"{localTime:yyyy-MM-dd HH:mm:ss} ({timeZone})";
+        return $"{localTime:yyyy-MM-dd HH:mm:ss} ({ResolveAbbreviation(localTime)})";
     }
 
     public static void Debug(string messageTemplate, params object?[] propertyValues)
@@ -107,32 +118,19 @@ public static class AppLogger
         Log.CloseAndFlush();
     }
 
-    private static void ReconfigureLogger(AppLogLevel minimumLevel)
+    // Selects the cached abbreviation for an already-local timestamp based on whether DST is in effect,
+    // so a long-running process that crosses a DST boundary labels each line with the zone in effect at
+    // the time.
+    private static string ResolveAbbreviation(DateTimeOffset localTime)
     {
-        var configuredLogger = new LoggerConfiguration()
-            .MinimumLevel.Is(ToSerilogLevel(minimumLevel))
-            .Enrich.With(new TimeZoneEnricher())
-            .WriteTo.Console(
-                outputTemplate:
-                "[{Timestamp:yyyy-MM-dd HH:mm:ss} ({TimeZone})] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
-            .CreateLogger();
-
-        var previousLogger = Log.Logger;
-        Log.Logger = configuredLogger;
-
-        if (previousLogger is IDisposable disposableLogger)
-        {
-            disposableLogger.Dispose();
-        }
+        return LocalTimeZone.IsDaylightSavingTime(localTime.DateTime) ? DaylightAbbreviation : StandardAbbreviation;
     }
 
-    private static string GetTimeZoneAbbreviation(DateTimeOffset value)
+    // Derives a short zone label from a zone display name: "UTC" for universal zones, otherwise the
+    // initials of each word (e.g. "Central European Time" -> "CET"), falling back to the raw zone id
+    // when that heuristic does not yield a 2-6 character token. Called only twice, at startup.
+    private static string BuildAbbreviation(string displayName)
     {
-        var localTime = TimeZoneInfo.ConvertTime(value, LocalTimeZone);
-        var displayName = LocalTimeZone.IsDaylightSavingTime(localTime.DateTime)
-            ? LocalTimeZone.DaylightName
-            : LocalTimeZone.StandardName;
-
         if (displayName.Contains("Universal", StringComparison.OrdinalIgnoreCase) ||
             displayName.Contains("UTC", StringComparison.OrdinalIgnoreCase))
         {
@@ -145,23 +143,15 @@ public static class AppLogger
             abbreviation.Append(char.ToUpperInvariant(segment[0]));
         }
 
-        if (abbreviation.Length is >= 2 and <= 6)
-        {
-            return abbreviation.ToString();
-        }
-
-        return LocalTimeZone.Id;
+        return abbreviation.Length is >= 2 and <= 6 ? abbreviation.ToString() : LocalTimeZone.Id;
     }
 
-    // Computes the timezone abbreviation from each event's own timestamp, so a long-running process
-    // that crosses a DST boundary labels lines with the zone in effect at the time — rather than the
-    // one captured once when the logger was configured.
     private sealed class TimeZoneEnricher : ILogEventEnricher
     {
         public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
         {
-            var abbreviation = GetTimeZoneAbbreviation(logEvent.Timestamp);
-            logEvent.AddOrUpdateProperty(propertyFactory.CreateProperty("TimeZone", abbreviation));
+            var localTime = TimeZoneInfo.ConvertTime(logEvent.Timestamp, LocalTimeZone);
+            logEvent.AddOrUpdateProperty(propertyFactory.CreateProperty("TimeZone", ResolveAbbreviation(localTime)));
         }
     }
 

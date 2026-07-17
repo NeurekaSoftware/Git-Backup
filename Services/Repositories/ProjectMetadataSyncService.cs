@@ -191,10 +191,12 @@ public sealed class ProjectMetadataSyncService
         where T : class, IBackedUpArtifactItem
     {
         var downloadArtifacts = spec.IncludeArtifacts && backup.MetadataClient.SupportsArtifacts;
+        var anyItemFailed = 0;
 
         // Per-item work (attachment download + document upload) is independent, so it can overlap up
-        // to the configured degree. The manifest and reconciliation below run only after every item
-        // has been stored, preserving the "reconcile a complete set" guarantee.
+        // to the configured degree. A single item's failure is logged and flagged rather than thrown,
+        // so one transient error no longer discards every other item's backup for this run (the
+        // per-attachment path already tolerates failures the same way).
         await Parallel.ForEachAsync(
             items,
             new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, backup.Context.Concurrency), CancellationToken = cancellationToken },
@@ -202,25 +204,56 @@ public sealed class ProjectMetadataSyncService
             {
                 var slug = spec.GetSlug(item);
 
-                if (downloadArtifacts)
+                try
                 {
-                    await DownloadAttachmentsAsync(item, slug, spec.BuildAttachmentObjectKey, backup, token);
-                }
-                else
-                {
-                    // Artifacts are gated off, so record no attachment references at all.
-                    item.Attachments = [];
-                }
+                    if (downloadArtifacts)
+                    {
+                        await DownloadAttachmentsAsync(item, slug, spec.BuildAttachmentObjectKey, backup, token);
+                    }
+                    else
+                    {
+                        // Artifacts are gated off, so record no attachment references at all.
+                        item.Attachments = [];
+                    }
 
-                await backup.ObjectStorageService.UploadTextAsync(
-                    spec.BuildObjectKey(slug),
-                    StorageMetadataDocuments.Serialize(item),
-                    token);
+                    await backup.ObjectStorageService.UploadTextAsync(
+                        spec.BuildObjectKey(slug),
+                        StorageMetadataDocuments.Serialize(item),
+                        token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    Interlocked.Exchange(ref anyItemFailed, 1);
+                    AppLogger.Error(
+                        exception,
+                        "{Collection} item backup failed. repository={Repository}, slug={Slug}, error={ErrorMessage}.",
+                        spec.Label,
+                        backup.RepositoryDisplay,
+                        slug,
+                        exception.Message);
+                }
             });
 
         await backup.ObjectStorageService.UploadTextAsync(spec.ManifestObjectKey, spec.SerializeManifest(items), cancellationToken);
 
-        await ReconcileAsync(items, spec.GetSlug, spec.CollectionPrefix, spec.ManifestObjectKey, backup.ObjectStorageService, cancellationToken);
+        // Reconciliation deletes stored documents the provider no longer returns. Skip it when any item
+        // failed this run so an item whose document did not upload is never mistaken for one removed
+        // upstream and deleted — a partial set must not drive deletes.
+        if (anyItemFailed == 0)
+        {
+            await ReconcileAsync(items, spec.GetSlug, spec.CollectionPrefix, spec.ManifestObjectKey, backup.ObjectStorageService, cancellationToken);
+        }
+        else
+        {
+            AppLogger.Warn(
+                "{Collection} reconciliation skipped because one or more items failed to back up. repository={Repository}.",
+                spec.Label,
+                backup.RepositoryDisplay);
+        }
     }
 
     private static async Task DownloadAttachmentsAsync(
