@@ -8,15 +8,26 @@ namespace GitBackup.Services.Storage;
 /// non-2xx (429, 401, 408, 413, 502, …) is reported as a <i>successful</i> response, so a failed
 /// request can be silently reported as done (e.g. an upload that never stored anything). This
 /// handler sits outermost in the HTTP pipeline — so it observes every response, including each
-/// multipart part and each list page — and closes that gap: it retries 429 (honoring
-/// <c>Retry-After</c>), and rewrites any other library-misclassified non-2xx into a 503 so the
-/// client raises <c>S3RequestException</c>. Real 2xx/304 and the codes the client already treats as
-/// errors pass through untouched.
+/// multipart part and each list page — and closes two gaps: it retries transient failures (429 and
+/// 5xx) over a wide, <c>Retry-After</c>-aware backoff, and rewrites any other library-misclassified
+/// non-2xx into a 503 so the client raises <c>S3RequestException</c>. Real 2xx/304 and the permanent
+/// errors the client already treats as failures pass through untouched.
+///
+/// The library's inner Polly layer also retries 5xx, but only over a sub-second window; providers
+/// that answer "service unavailable, please try again later" often need to be given several seconds.
+/// Because this handler buffers the request body for re-send, it is the one place that can retry an
+/// upload part durably, so it owns the wider backoff while Polly keeps its fast inner retry.
 /// </summary>
 internal sealed class NoSilentSuccessHandler : DelegatingHandler
 {
     private const int MaxAttempts = 5;
     private const double MaxBackoffSeconds = 30;
+
+    // Transient server errors worth another attempt. Each upload/delete request this handler carries
+    // is idempotent (same key, same part number), so re-sending after one of these is always safe.
+    // 501 (Not Implemented) is excluded — it means the provider does not support the operation, which
+    // no amount of retrying will change.
+    private static readonly HashSet<int> RetryableServerErrorCodes = [500, 502, 503, 504];
 
     // Status codes SimpleS3's DefaultResponseHandler already treats as errors (and throws on).
     private static readonly HashSet<int> LibraryErrorCodes =
@@ -42,6 +53,7 @@ internal sealed class NoSilentSuccessHandler : DelegatingHandler
 
             if (statusCode == 429 && attempt < MaxAttempts)
             {
+                // A rate limit's own Retry-After is authoritative, so honor it uncapped.
                 var delay = RetryDelay.Resolve(
                     response.Headers.RetryAfter,
                     attempt,
@@ -50,6 +62,28 @@ internal sealed class NoSilentSuccessHandler : DelegatingHandler
                     jitter: true);
                 AppLogger.Warn(
                     "Storage request was rate limited (429). Backing off before retry. method={Method}, uri={Uri}, attempt={Attempt}, delaySeconds={DelaySeconds}.",
+                    request.Method.Method,
+                    request.RequestUri,
+                    attempt,
+                    Math.Round(delay.TotalSeconds, 1));
+                response.Dispose();
+                await Task.Delay(delay, cancellationToken);
+                continue;
+            }
+
+            if (RetryableServerErrorCodes.Contains(statusCode) && attempt < MaxAttempts)
+            {
+                // Cap any server-supplied Retry-After here: unlike a rate limit, a 5xx delay is a hint,
+                // and a stuck provider should not be able to stall a part for minutes on one response.
+                var delay = RetryDelay.Resolve(
+                    response.Headers.RetryAfter,
+                    attempt,
+                    TimeSpan.FromSeconds(MaxBackoffSeconds),
+                    capRetryAfterToMax: true,
+                    jitter: true);
+                AppLogger.Warn(
+                    "Storage is temporarily unavailable (HTTP {StatusCode}). Backing off before retry. method={Method}, uri={Uri}, attempt={Attempt}, delaySeconds={DelaySeconds}.",
+                    statusCode,
                     request.Method.Method,
                     request.RequestUri,
                     attempt,

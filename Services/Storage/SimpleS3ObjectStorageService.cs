@@ -58,8 +58,10 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             config.ThrowExceptionOnError = true;
         });
 
-        // The library retries timeouts and 5xx with exponential backoff + jitter. The handler below
-        // additionally covers 429 and the other non-2xx codes the library misreports as success.
+        // The library retries timeouts and 5xx with exponential backoff + jitter, but only over a
+        // sub-second window. The handler below owns the durable, wider transient retry — 429, 5xx, and
+        // the other non-2xx codes the library misreports as success — since it buffers the request body
+        // and so can safely re-send an upload part after a provider blip that outlasts this inner retry.
         clientBuilder.HttpBuilder.UseRetryAndTimeout(polly =>
         {
             polly.Retries = 5;
