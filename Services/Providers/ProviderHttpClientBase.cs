@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 using GitBackup.Services.Paths;
 
@@ -36,6 +37,27 @@ public abstract class ProviderHttpClientBase
         }
 
         return client;
+    }
+
+    /// <summary>
+    /// Creates an HTTP client carrying the provider's authentication for the given credential. The auth
+    /// scheme is the only per-provider difference (GitHub/Forgejo set an Authorization header, GitLab a
+    /// PRIVATE-TOKEN header), so it is the single abstract seam over the shared client setup.
+    /// </summary>
+    protected abstract HttpClient CreateAuthenticatedClient(CredentialConfig credential);
+
+    /// <summary>
+    /// Downloads an issue/MR/release attachment into memory. Identical across providers once the auth
+    /// scheme is supplied by <see cref="CreateAuthenticatedClient"/>.
+    /// </summary>
+    public async Task<Stream> OpenAttachmentAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        string downloadUrl,
+        CancellationToken cancellationToken)
+    {
+        using var client = CreateAuthenticatedClient(credential);
+        return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
     }
 
     private static ProductInfoHeaderValue CreateUserAgent()
@@ -120,6 +142,15 @@ public abstract class ProviderHttpClientBase
         }
 
         return $"{baseUrl}{apiSuffix}";
+    }
+
+    /// <summary>
+    /// Resolves a provider API base URL from an optional configured value, a provider default, and the
+    /// provider's API path suffix (e.g. <c>/api/v4</c>).
+    /// </summary>
+    protected static string ComposeApiBaseUrl(string? configuredBaseUrl, string defaultBaseUrl, string apiSuffix)
+    {
+        return EnsureApiSuffix(ResolveBaseUrl(configuredBaseUrl, defaultBaseUrl), apiSuffix);
     }
 
     protected static string? GetStringOrNull(JsonElement element, string propertyName)
@@ -242,23 +273,42 @@ public abstract class ProviderHttpClientBase
     }
 
     /// <summary>
+    /// Builds the URL-escaped <c>{owner}/{repo}</c> path segment for providers that address a project
+    /// as <c>/repos/{owner}/{repo}</c>.
+    /// </summary>
+    protected static string BuildOwnerRepoPath(string cloneUrl)
+    {
+        var (owner, repository) = ResolveOwnerAndRepository(cloneUrl);
+        return $"{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repository)}";
+    }
+
+    /// <summary>
+    /// Removes items that share a key, keeping the first occurrence (ordinal comparison). Centralizes
+    /// the first-wins dedupe idiom used across providers.
+    /// </summary>
+    protected static List<T> DistinctByKey<T>(IEnumerable<T> items, Func<T, string> keySelector)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<T>();
+        foreach (var item in items)
+        {
+            if (seen.Add(keySelector(item)))
+            {
+                result.Add(item);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// Removes repositories that share a clone URL, keeping first occurrence. Used when owned and
     /// starred results are merged, since a starred repository can also be an owned one.
     /// </summary>
     protected static IReadOnlyList<DiscoveredRepository> DistinctByCloneUrl(
         IEnumerable<DiscoveredRepository> repositories)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var result = new List<DiscoveredRepository>();
-        foreach (var repository in repositories)
-        {
-            if (seen.Add(repository.CloneUrl))
-            {
-                result.Add(repository);
-            }
-        }
-
-        return result;
+        return DistinctByKey(repositories, repository => repository.CloneUrl);
     }
 
     /// <summary>

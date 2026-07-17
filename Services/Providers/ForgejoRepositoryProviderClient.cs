@@ -32,7 +32,7 @@ public sealed class ForgejoRepositoryProviderClient
         }
 
         var baseUrl = ResolveApiBaseUrl(repository.BaseUrl);
-        using var client = CreateForgejoClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         var owned = await CollectAsync(
             client,
@@ -69,7 +69,7 @@ public sealed class ForgejoRepositoryProviderClient
 
         var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
         var repositoryPath = ResolveRepositoryPath(context);
-        using var client = CreateForgejoClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         var issues = await CollectAsync(
             client,
@@ -107,7 +107,7 @@ public sealed class ForgejoRepositoryProviderClient
 
         var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
         var repositoryPath = ResolveRepositoryPath(context);
-        using var client = CreateForgejoClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         var pulls = await CollectAsync(
             client,
@@ -146,7 +146,7 @@ public sealed class ForgejoRepositoryProviderClient
 
         var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
         var repositoryPath = ResolveRepositoryPath(context);
-        using var client = CreateForgejoClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         return await CollectAsync(
             client,
@@ -154,16 +154,6 @@ public sealed class ForgejoRepositoryProviderClient
             MapGiteaRelease,
             PageIsFull(PageSize),
             cancellationToken);
-    }
-
-    public async Task<Stream> OpenAttachmentAsync(
-        ProjectMetadataContext context,
-        CredentialConfig credential,
-        string downloadUrl,
-        CancellationToken cancellationToken)
-    {
-        using var client = CreateForgejoClient(credential);
-        return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
     }
 
     private static async Task<(List<BackedUpComment> Comments, List<BackedUpAttachment> Attachments)> FetchCommentsAsync(
@@ -212,20 +202,10 @@ public sealed class ForgejoRepositoryProviderClient
         IReadOnlyList<BackedUpAttachment> first,
         IReadOnlyList<BackedUpAttachment> second)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var merged = new List<BackedUpAttachment>();
-        foreach (var attachment in first.Concat(second))
-        {
-            if (seen.Add(attachment.OriginalPath))
-            {
-                merged.Add(attachment);
-            }
-        }
-
-        return merged;
+        return DistinctByKey(first.Concat(second), attachment => attachment.OriginalPath);
     }
 
-    private HttpClient CreateForgejoClient(CredentialConfig credential)
+    protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
     {
         var client = CreateClient(token: string.Empty);
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", credential.ApiKey!.Trim());
@@ -234,12 +214,11 @@ public sealed class ForgejoRepositoryProviderClient
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)
     {
-        return EnsureApiSuffix(ResolveBaseUrl(configuredBaseUrl, DefaultBaseUrl), "/api/v1");
+        return ComposeApiBaseUrl(configuredBaseUrl, DefaultBaseUrl, "/api/v1");
     }
 
     private static string ResolveRepositoryPath(ProjectMetadataContext context)
     {
-        var (owner, repository) = ResolveOwnerAndRepository(context.CloneUrl);
-        return $"{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repository)}";
+        return BuildOwnerRepoPath(context.CloneUrl);
     }
 }

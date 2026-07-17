@@ -38,7 +38,7 @@ public sealed class GitLabRepositoryProviderClient
         }
 
         var baseUrl = ResolveApiBaseUrl(repository.BaseUrl);
-        using var client = CreateGitLabClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         var results = new List<DiscoveredRepository>();
 
@@ -87,7 +87,7 @@ public sealed class GitLabRepositoryProviderClient
 
         var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
         var projectId = ResolveProjectIdentifier(context);
-        using var client = CreateGitLabClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         var issues = await CollectAsync(
             client,
@@ -126,7 +126,7 @@ public sealed class GitLabRepositoryProviderClient
 
         var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
         var projectId = ResolveProjectIdentifier(context);
-        using var client = CreateGitLabClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         var mergeRequests = await CollectAsync(
             client,
@@ -166,7 +166,7 @@ public sealed class GitLabRepositoryProviderClient
         var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
         var projectId = ResolveProjectIdentifier(context);
         var instanceHost = ResolveInstanceHost(context);
-        using var client = CreateGitLabClient(credential);
+        using var client = CreateAuthenticatedClient(credential);
 
         return await CollectAsync(
             client,
@@ -174,16 +174,6 @@ public sealed class GitLabRepositoryProviderClient
             item => MapRelease(item, instanceHost),
             HasNextPage,
             cancellationToken);
-    }
-
-    public async Task<Stream> OpenAttachmentAsync(
-        ProjectMetadataContext context,
-        CredentialConfig credential,
-        string downloadUrl,
-        CancellationToken cancellationToken)
-    {
-        using var client = CreateGitLabClient(credential);
-        return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
     }
 
     // GitLab paginates via the X-Next-Page response header rather than a full-page heuristic.
@@ -436,7 +426,7 @@ public sealed class GitLabRepositoryProviderClient
         return attachments;
     }
 
-    private HttpClient CreateGitLabClient(CredentialConfig credential)
+    protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
     {
         var client = CreateClient(token: string.Empty);
         client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey!.Trim());
@@ -445,7 +435,7 @@ public sealed class GitLabRepositoryProviderClient
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)
     {
-        return EnsureApiSuffix(ResolveBaseUrl(configuredBaseUrl, DefaultBaseUrl), "/api/v4");
+        return ComposeApiBaseUrl(configuredBaseUrl, DefaultBaseUrl, "/api/v4");
     }
 
     private static string ResolveProjectIdentifier(ProjectMetadataContext context)

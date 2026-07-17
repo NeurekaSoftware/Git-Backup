@@ -38,7 +38,7 @@ public sealed class GitHubRepositoryProviderClient
         }
 
         var baseUrl = ResolveGitHubApiBaseUrl(repository.BaseUrl);
-        using var client = CreateClient(credential.ApiKey);
+        using var client = CreateAuthenticatedClient(credential);
 
         var results = new List<DiscoveredRepository>();
 
@@ -187,14 +187,9 @@ public sealed class GitHubRepositoryProviderClient
         }
     }
 
-    public async Task<Stream> OpenAttachmentAsync(
-        ProjectMetadataContext context,
-        CredentialConfig credential,
-        string downloadUrl,
-        CancellationToken cancellationToken)
+    protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
     {
-        using var client = CreateClient(credential.ApiKey);
-        return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
+        return CreateClient(credential.ApiKey);
     }
 
     private (string BaseUrl, HttpClient Client, string RepositoryPath) CreateProjectClient(
@@ -202,9 +197,7 @@ public sealed class GitHubRepositoryProviderClient
         CredentialConfig credential)
     {
         var baseUrl = ResolveGitHubApiBaseUrl(context.BaseUrl);
-        var (owner, repository) = ResolveOwnerAndRepository(context.CloneUrl);
-        var repositoryPath = $"{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repository)}";
-        return (baseUrl, CreateClient(credential.ApiKey!), repositoryPath);
+        return (baseUrl, CreateAuthenticatedClient(credential), BuildOwnerRepoPath(context.CloneUrl));
     }
 
     // The GitHub issues endpoint also returns pull requests; those carry a pull_request object and are
