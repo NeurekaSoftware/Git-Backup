@@ -150,6 +150,10 @@ public sealed class ProjectMetadataSyncService
         {
             items = await listAsync();
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             // A partial fetch must never drive reconciliation deletes, so skip the whole collection.
@@ -257,11 +261,15 @@ public sealed class ProjectMetadataSyncService
                 attachment.ContentType = contentType;
                 attachment.SizeBytes = stream.CanSeek ? stream.Length : null;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception exception)
             {
                 // Keep the reference (with no StorageKey) so the document still records that the file
                 // existed; one bad attachment must not fail the whole item.
-                AppLogger.Error(exception, "Attachment backup failed. originalPath={OriginalPath}, error={ErrorMessage}.", attachment.OriginalPath, exception.Message);
+                AppLogger.Error(exception, "Attachment backup failed. originalPath={OriginalPath}, error={ErrorMessage}.", AttachmentDownloader.RedactUrl(attachment.OriginalPath), exception.Message);
             }
         }
     }

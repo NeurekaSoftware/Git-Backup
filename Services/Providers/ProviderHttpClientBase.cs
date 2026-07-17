@@ -20,10 +20,14 @@ public abstract class ProviderHttpClientBase
         PooledConnectionLifetime = TimeSpan.FromMinutes(5)
     };
 
+    // The product/version is constant for the process lifetime, so build the header once instead of on
+    // every CreateClient call. ProductInfoHeaderValue is immutable and safe to share across clients.
+    private static readonly ProductInfoHeaderValue UserAgent = CreateUserAgent();
+
     protected static HttpClient CreateClient(string? token)
     {
         var client = new HttpClient(SharedHandler, disposeHandler: false);
-        client.DefaultRequestHeaders.UserAgent.Add(CreateUserAgent());
+        client.DefaultRequestHeaders.UserAgent.Add(UserAgent);
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
         if (!string.IsNullOrWhiteSpace(token))

@@ -54,6 +54,8 @@ public sealed class RepositorySyncService
 
         foreach (var repository in enabledRepositories)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (repository is null)
             {
                 AppLogger.Warn("Skipping repository job because the entry is missing.");
@@ -80,6 +82,10 @@ public sealed class RepositorySyncService
                     AppLogger.Warn("Skipping repository job because mode is invalid. mode={Mode}.", repository.Mode);
                     pictureComplete = false;
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception exception)
             {
@@ -135,6 +141,10 @@ public sealed class RepositorySyncService
         try
         {
             discoveredRepositories = await providerClient.ListRepositoriesAsync(repository, credentialConfig, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -199,6 +209,10 @@ public sealed class RepositorySyncService
                             metadataConcurrency,
                             token);
                     }
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception exception)
                 {
@@ -311,6 +325,10 @@ public sealed class RepositorySyncService
                         token);
 
                     Interlocked.Increment(ref syncedRepositories);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception exception)
                 {

@@ -111,7 +111,9 @@ public sealed class ScheduledJobRunner
             }
 
             var runStartedAt = DateTimeOffset.UtcNow;
-            AppLogger.Info("{JobName}: run started.", jobName);
+            // The job service logs its own richer "started" line (with counts); keep only the timing
+            // envelope here to avoid a duplicate start marker for the same event.
+            AppLogger.Debug("{JobName}: run started.", jobName);
 
             try
             {
@@ -193,9 +195,9 @@ public sealed class ScheduledJobRunner
 
         try
         {
-            AppLogger.Info("Retention started after the {TriggeredByJob} job run.", triggeredBy);
+            // RepositoryRetentionService logs its own "started"/"completed" lines with detail, so this
+            // envelope only handles the failure/cancel cases below.
             await _retentionService.RunAsync(_getSettings(), cancellationToken);
-            AppLogger.Info("Retention completed.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

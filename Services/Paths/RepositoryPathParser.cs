@@ -53,7 +53,10 @@ public static class RepositoryPathParser
 
     private static string NormalizeSegment(string value)
     {
-        var normalized = InvalidSegmentCharacters.Replace(value.Trim().ToLowerInvariant(), "-").Trim('-');
+        // Trim leading/trailing '-' and '.' (matching AttachmentDownloader.SanitizeFileName) so a
+        // segment like "." or ".." collapses to the safe fallback below instead of surviving into a
+        // storage key as a path-traversal token.
+        var normalized = InvalidSegmentCharacters.Replace(value.Trim().ToLowerInvariant(), "-").Trim('-', '.');
         return string.IsNullOrWhiteSpace(normalized) ? "unknown" : normalized;
     }
 }

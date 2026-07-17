@@ -228,7 +228,6 @@ public sealed class ForgejoRepositoryProviderClient
     private HttpClient CreateForgejoClient(CredentialConfig credential)
     {
         var client = CreateClient(token: string.Empty);
-        client.DefaultRequestHeaders.Remove("Authorization");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", credential.ApiKey!.Trim());
         return client;
     }

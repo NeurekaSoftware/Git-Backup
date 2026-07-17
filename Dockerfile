@@ -13,6 +13,7 @@ RUN --mount=type=cache,target=/root/.nuget/packages,sharing=locked \
  && dotnet restore /app/src/GitBackup.csproj -r "$DOTNET_RID" \
  && dotnet publish /app/src/GitBackup.csproj \
       --no-restore \
+      --no-self-contained \
       -c ${BUILD_CONFIGURATION} \
       -r "$DOTNET_RID" \
       -o /app/bin
@@ -36,6 +37,9 @@ RUN apt-get update \
 
 WORKDIR /app
 RUN mkdir -p /app/bin /app/data
+# /app/data holds the persisted settings file and the incremental git-mirror cache; declare it a
+# volume so the cache survives container recreation instead of forcing a full re-clone each run.
+VOLUME ["/app/data"]
 COPY --from=build /app/bin /app/bin
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

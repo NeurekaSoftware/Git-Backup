@@ -64,6 +64,14 @@ public sealed class SettingsLoader
             return SettingsLoadResult.Failure(deprecatedKeyErrors);
         }
 
+        // Reject a present-but-unrecognized enum value before Normalize coerces it to a default —
+        // otherwise a typo like `logLevel: verbse` would be silently accepted as `info`.
+        var rawValueErrors = ValidateRawEnums(settings);
+        if (rawValueErrors.Count > 0)
+        {
+            return SettingsLoadResult.Failure(rawValueErrors);
+        }
+
         Normalize(settings);
         var errors = Validate(settings);
 
@@ -120,11 +128,32 @@ public sealed class SettingsLoader
     private static List<string> Validate(Settings settings)
     {
         var errors = new List<string>();
-        ValidateLogging(settings, errors);
         ValidateStorage(settings, errors);
         ValidateRepositories(settings, errors);
         ValidateSchedule(settings, errors);
         ValidateConcurrency(settings, errors);
+        return errors;
+    }
+
+    // Validates the enum-like fields against the raw, pre-Normalize values. Both are optional (a
+    // null/blank value falls back to a default in Normalize), so only a value that is present and
+    // unrecognized is reported — Normalize would otherwise coerce it to a default and hide the mistake.
+    private static List<string> ValidateRawEnums(Settings settings)
+    {
+        var errors = new List<string>();
+
+        var logLevel = settings.Logging?.LogLevel;
+        if (!string.IsNullOrWhiteSpace(logLevel) && !AppLogger.TryParseLogLevel(logLevel, out _))
+        {
+            errors.Add($"logging.logLevel '{logLevel}' is invalid. Supported values: {string.Join(", ", AppLogger.SupportedLogLevels)}.");
+        }
+
+        var payloadSignatureMode = settings.Storage?.PayloadSignatureMode;
+        if (!string.IsNullOrWhiteSpace(payloadSignatureMode) && !PayloadSignatureModes.Supported.Contains(payloadSignatureMode))
+        {
+            errors.Add($"storage.payloadSignatureMode '{payloadSignatureMode}' is invalid. Supported values: full, streaming, unsigned.");
+        }
+
         return errors;
     }
 
@@ -141,29 +170,8 @@ public sealed class SettingsLoader
         }
     }
 
-    private static void ValidateLogging(Settings settings, List<string> errors)
-    {
-        if (settings.Logging is null)
-        {
-            errors.Add("logging is required.");
-            return;
-        }
-
-        if (!AppLogger.TryParseLogLevel(settings.Logging.LogLevel, out _))
-        {
-            var supported = string.Join(", ", AppLogger.SupportedLogLevels);
-            errors.Add($"logging.logLevel '{settings.Logging.LogLevel}' is invalid. Supported values: {supported}.");
-        }
-    }
-
     private static void ValidateStorage(Settings settings, List<string> errors)
     {
-        if (settings.Storage is null)
-        {
-            errors.Add("storage is required.");
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(settings.Storage.Endpoint))
         {
             errors.Add("storage.endpoint is required.");
@@ -191,12 +199,6 @@ public sealed class SettingsLoader
         if (string.IsNullOrWhiteSpace(settings.Storage.Bucket))
         {
             errors.Add("storage.bucket is required.");
-        }
-
-        if (!PayloadSignatureModes.Supported.Contains(settings.Storage.PayloadSignatureMode!))
-        {
-            errors.Add(
-                $"storage.payloadSignatureMode '{settings.Storage.PayloadSignatureMode}' is invalid. Supported values: full, streaming, unsigned.");
         }
 
         if (settings.Storage.RetentionMinimum is < 0)
@@ -372,12 +374,6 @@ public sealed class SettingsLoader
 
     private static void ValidateSchedule(Settings settings, List<string> errors)
     {
-        if (settings.Schedule is null)
-        {
-            errors.Add("schedule is required.");
-            return;
-        }
-
         ValidateCron(settings.Schedule.Repositories.Cron, "schedule.repositories.cron", errors);
     }
 

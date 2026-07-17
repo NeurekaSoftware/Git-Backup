@@ -249,15 +249,19 @@ public sealed class GitHubRepositoryProviderClient
             foreach (Match match in AttachmentReference.Matches(text))
             {
                 var url = match.Value;
-                if (!seen.Add(url))
+
+                // Persist and key off the query-free URL so the short-lived ?jwt= signing token is never
+                // stored (and the key stays stable across runs); the full URL is kept only for download.
+                var reference = AttachmentDownloader.RedactUrl(url);
+                if (!seen.Add(reference))
                 {
                     continue;
                 }
 
                 attachments.Add(new BackedUpAttachment
                 {
-                    FileName = $"{AttachmentDownloader.ShortHash(url)}-{AttachmentDownloader.SanitizeFileName(LastPathSegment(url))}",
-                    OriginalPath = url,
+                    FileName = $"{AttachmentDownloader.ShortHash(reference)}-{AttachmentDownloader.SanitizeFileName(LastPathSegment(reference))}",
+                    OriginalPath = reference,
                     DownloadUrl = url
                 });
             }

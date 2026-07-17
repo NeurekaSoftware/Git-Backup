@@ -6,10 +6,19 @@ services:
       - .env
     networks:
       - git-backup
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     volumes:
+      - gitbackup-data:/app/data
       - ./settings.yaml:/app/data/settings.yaml:ro
     restart: unless-stopped
 
 networks:
   git-backup:
     name: git-backup
+
+volumes:
+  gitbackup-data:
+    name: gitbackup-data

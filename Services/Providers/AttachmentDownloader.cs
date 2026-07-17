@@ -28,7 +28,7 @@ internal static class AttachmentDownloader
         if (declaredLength > MaxAttachmentBytes)
         {
             throw new InvalidOperationException(
-                $"Attachment '{downloadUrl}' is {declaredLength} bytes, over the {MaxAttachmentBytes} byte limit.");
+                $"Attachment '{RedactUrl(downloadUrl)}' is {declaredLength} bytes, over the {MaxAttachmentBytes} byte limit.");
         }
 
         // Pre-size the buffer when the server declares a length, avoiding the doubling reallocations
@@ -62,6 +62,18 @@ internal static class AttachmentDownloader
         candidate = Uri.UnescapeDataString(candidate);
         var sanitized = InvalidFileNameCharacters.Replace(candidate, "-").Trim('-', '.');
         return string.IsNullOrWhiteSpace(sanitized) ? "file" : sanitized;
+    }
+
+    /// <summary>
+    /// Strips the query string from a URL so short-lived signed tokens (e.g. GitHub's
+    /// <c>private-user-images…?jwt=</c>) are never written to a log or persisted as a stored
+    /// attachment reference. Using the query-free form also keeps the derived storage key stable across
+    /// runs, since the signing token changes on every API read.
+    /// </summary>
+    public static string RedactUrl(string url)
+    {
+        var queryIndex = url.IndexOf('?');
+        return queryIndex >= 0 ? url[..queryIndex] : url;
     }
 
     /// <summary>

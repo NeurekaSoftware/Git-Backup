@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using GitBackup.Configuration;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
@@ -74,6 +75,16 @@ class Program
                 AppLogger.Warn("Shutdown requested by Ctrl+C.");
             };
 
+            // Containers are stopped with SIGTERM (docker stop, orchestrator redeploy), not Ctrl+C.
+            // Handle it so an in-flight clone or upload is cancelled cleanly and logs are flushed,
+            // instead of being hard-killed when the stop grace period expires.
+            using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+            {
+                context.Cancel = true;
+                shutdown.Cancel();
+                AppLogger.Warn("Shutdown requested by SIGTERM.");
+            });
+
             AppLogger.Info("Scheduler is running. Press Ctrl+C to stop.");
 
             try
@@ -132,7 +143,18 @@ class Program
 
     private static string ResolveWorkingRoot()
     {
-        return Path.Combine(Path.GetTempPath(), ".git-backup");
+        var configured = Environment.GetEnvironmentVariable("GITBACKUP_WORKING_ROOT");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        // In a container, keep the git mirrors under the persisted data directory so the incremental
+        // fetch cache survives restarts and image updates instead of being fully re-cloned every run.
+        // Outside a container, fall back to a temp directory.
+        return IsRunningInContainer()
+            ? ContainerDataPath
+            : Path.Combine(Path.GetTempPath(), ".git-backup");
     }
 
     private static string[] GetDefaultSettingsPathCandidates()

@@ -439,7 +439,6 @@ public sealed class GitLabRepositoryProviderClient
     private HttpClient CreateGitLabClient(CredentialConfig credential)
     {
         var client = CreateClient(token: string.Empty);
-        client.DefaultRequestHeaders.Remove("Authorization");
         client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey!.Trim());
         return client;
     }

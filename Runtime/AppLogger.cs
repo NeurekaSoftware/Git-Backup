@@ -73,7 +73,7 @@ public static class AppLogger
     {
         var localTime = TimeZoneInfo.ConvertTime(value, LocalTimeZone);
         var timeZone = GetTimeZoneAbbreviation(localTime);
-        return $"{localTime:yyyy-MM-dd hh:mm:ss tt} ({timeZone})";
+        return $"{localTime:yyyy-MM-dd HH:mm:ss} ({timeZone})";
     }
 
     public static void Debug(string messageTemplate, params object?[] propertyValues)
@@ -113,7 +113,7 @@ public static class AppLogger
             .Enrich.WithProperty("TimeZone", GetTimeZoneAbbreviation(DateTimeOffset.Now))
             .WriteTo.Console(
                 outputTemplate:
-                "[{Timestamp:yyyy-MM-dd hh:mm:ss tt} ({TimeZone})] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
+                "[{Timestamp:yyyy-MM-dd HH:mm:ss} ({TimeZone})] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .CreateLogger();
 
         var previousLogger = Log.Logger;

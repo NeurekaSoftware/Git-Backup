@@ -75,7 +75,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         _serviceProvider = services.BuildServiceProvider();
         _client = _serviceProvider.GetRequiredService<ISimpleClient>();
 
-        AppLogger.Info("Object storage client initialized. provider={Provider}.", "GenericS3");
+        AppLogger.Debug("Object storage client initialized. provider={Provider}.", "GenericS3");
         AppLogger.Debug(
             "Object storage settings: endpoint={Endpoint}, resolvedEndpoint={ResolvedEndpoint}, region={Region}, bucket={Bucket}, forcePathStyle={ForcePathStyle}, payloadSignatureMode={PayloadSignatureMode}.",
             endpoint,
@@ -226,7 +226,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             throw ReportFailure("list objects", normalizedPrefix, exception);
         }
 
-        AppLogger.Info("Object key listing completed. prefix={Prefix}, keyCount={KeyCount}.", normalizedPrefix, keys.Count);
+        AppLogger.Debug("Object key listing completed. prefix={Prefix}, keyCount={KeyCount}.", normalizedPrefix, keys.Count);
         return keys;
     }
 
@@ -244,7 +244,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             return;
         }
 
-        AppLogger.Info("Deleting objects. count={ObjectCount}.", keys.Length);
+        AppLogger.Debug("Deleting objects. count={ObjectCount}.", keys.Length);
         var useSingleObjectDeletes = false;
 
         foreach (var batch in keys.Chunk(1000))

@@ -16,6 +16,15 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Only http/https clone URLs are ever handled. Rejecting anything else here (the single choke
+        // point for every clone/fetch) keeps a provider-supplied URL from reaching a git transport
+        // helper such as `ext::` or `file://`, which would run commands or read local files.
+        if (!IsSupportedTransport(remoteUrl))
+        {
+            throw new InvalidOperationException(
+                $"Unsupported repository URL '{remoteUrl}'. Only http and https clone URLs are allowed.");
+        }
+
         var hasMirror = await IsBareRepositoryAsync(localPath, cancellationToken);
 
         if (cache && hasMirror)
@@ -27,7 +36,7 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
             try
             {
                 await SetRemoteUrlAsync(localPath, remoteUrl, credential, cancellationToken);
-                await FetchAsync(localPath, credential, cancellationToken);
+                await FetchAsync(localPath, remoteUrl, credential, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -45,7 +54,7 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
 
         if (includeLfs)
         {
-            await FetchLfsAsync(localPath, credential, cancellationToken);
+            await FetchLfsAsync(localPath, remoteUrl, credential, cancellationToken);
         }
     }
 
@@ -70,6 +79,7 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
         var result = await ExecuteGitAsync(
             ["-C", localPath, "rev-parse", "--is-bare-repository"],
             credential: null,
+            credentialScopeUrl: null,
             cancellationToken,
             throwOnFailure: false);
 
@@ -80,8 +90,9 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
     private static Task CloneMirrorAsync(string remoteUrl, string localPath, GitCredential? credential, CancellationToken cancellationToken)
     {
         return ExecuteGitAsync(
-            ["clone", "--mirror", remoteUrl, localPath],
+            ["clone", "--mirror", "--", remoteUrl, localPath],
             credential,
+            credentialScopeUrl: remoteUrl,
             cancellationToken,
             throwOnFailure: true);
     }
@@ -91,24 +102,27 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
         return ExecuteGitAsync(
             ["-C", localPath, "remote", "set-url", "origin", remoteUrl],
             credential,
+            credentialScopeUrl: remoteUrl,
             cancellationToken,
             throwOnFailure: true);
     }
 
-    private static Task FetchAsync(string localPath, GitCredential? credential, CancellationToken cancellationToken)
+    private static Task FetchAsync(string localPath, string remoteUrl, GitCredential? credential, CancellationToken cancellationToken)
     {
         return ExecuteGitAsync(
             ["-C", localPath, "fetch", "--all", "--prune"],
             credential,
+            credentialScopeUrl: remoteUrl,
             cancellationToken,
             throwOnFailure: true);
     }
 
-    private static Task FetchLfsAsync(string localPath, GitCredential? credential, CancellationToken cancellationToken)
+    private static Task FetchLfsAsync(string localPath, string remoteUrl, GitCredential? credential, CancellationToken cancellationToken)
     {
         return ExecuteGitAsync(
             ["-C", localPath, "lfs", "fetch", "--all"],
             credential,
+            credentialScopeUrl: remoteUrl,
             cancellationToken,
             throwOnFailure: true);
     }
@@ -116,6 +130,7 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
     private static async Task<CommandResult> ExecuteGitAsync(
         IReadOnlyList<string> arguments,
         GitCredential? credential,
+        string? credentialScopeUrl,
         CancellationToken cancellationToken,
         bool throwOnFailure)
     {
@@ -135,8 +150,14 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
             // config rather than `-c` arguments, so the token never appears in the git process's
             // world-readable /proc/<pid>/cmdline. GIT_CONFIG_* is honored by git and its HTTP/LFS
             // subprocesses just like `-c`.
+            //
+            // Scope the header to the remote's own origin (scheme://host[:port]/) instead of setting it
+            // globally: git longest-prefix matches http.<url>.* config, so the token is sent only to the
+            // repository's host and never to a different host reached via an HTTP redirect or a
+            // repository-supplied LFS endpoint (.lfsconfig).
+            var credentialScope = BuildCredentialScope(credentialScopeUrl);
             processStartInfo.Environment["GIT_CONFIG_COUNT"] = "2";
-            processStartInfo.Environment["GIT_CONFIG_KEY_0"] = "http.extraheader";
+            processStartInfo.Environment["GIT_CONFIG_KEY_0"] = $"http.{credentialScope}.extraheader";
             processStartInfo.Environment["GIT_CONFIG_VALUE_0"] = $"Authorization: Basic {CreateBasicHeader(credential)}";
             processStartInfo.Environment["GIT_CONFIG_KEY_1"] = "credential.helper";
             processStartInfo.Environment["GIT_CONFIG_VALUE_1"] = string.Empty;
@@ -153,7 +174,24 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
         var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
 
-        await process.WaitForExitAsync(cancellationToken);
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            // Don't leave a detached git clone/fetch/LFS transfer running after the run is cancelled.
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // Best-effort: the process may already have exited.
+            }
+
+            throw;
+        }
 
         var result = new CommandResult(
             process.ExitCode,
@@ -173,6 +211,24 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
     {
         var raw = $"{credential.Username}:{credential.Password}";
         return Convert.ToBase64String(Encoding.UTF8.GetBytes(raw));
+    }
+
+    // Derives the scheme://host[:port]/ origin used to scope the auth header to the remote's own host.
+    // Callers validate the transport (IsSupportedTransport) before a credential is ever attached, so a
+    // parse failure here is defensive only — it yields a scope that simply matches no request, which
+    // fails closed (the header is withheld) rather than leaking the token.
+    private static string BuildCredentialScope(string? credentialScopeUrl)
+    {
+        return Uri.TryCreate(credentialScopeUrl, UriKind.Absolute, out var uri)
+            ? $"{uri.GetLeftPart(UriPartial.Authority)}/"
+            : credentialScopeUrl ?? string.Empty;
+    }
+
+    private static bool IsSupportedTransport(string remoteUrl)
+    {
+        return Uri.TryCreate(remoteUrl, UriKind.Absolute, out var uri)
+               && (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                   || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
     }
 
     private sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError);
