@@ -22,9 +22,8 @@ public sealed class ProjectMetadataContext
     // Max issues/merge requests to fetch and upload in parallel for this project. 1 = sequential.
     public int Concurrency { get; init; } = 1;
 
-    // Shared across the whole run to cap how many attachments are downloaded (and buffered fully in
-    // memory) at once, so nested repository x metadata parallelism cannot multiply peak memory. Null
-    // disables throttling.
+    // Shared across the whole run to cap how many attachments are downloaded at once, so nested
+    // repository x metadata parallelism cannot multiply peak memory. Null disables throttling.
     public SemaphoreSlim? DownloadThrottle { get; init; }
 }
 
@@ -36,21 +35,6 @@ public sealed class ProjectMetadataContext
 public interface IBackedUpArtifactItem
 {
     IReadOnlyList<BackedUpAttachment> Attachments { get; set; }
-}
-
-/// <summary>
-/// Shared shape of a backed-up issue or merge request. Not implemented by releases (which are keyed
-/// by tag, not number, and carry no comments).
-/// </summary>
-public interface IBackedUpProjectItem : IBackedUpArtifactItem
-{
-    long Number { get; }
-
-    string Title { get; }
-
-    string? State { get; }
-
-    DateTimeOffset? UpdatedAt { get; }
 }
 
 /// <summary>
@@ -115,7 +99,7 @@ public sealed class BackedUpRelease : IBackedUpArtifactItem
 /// A backed-up issue with its full comment thread embedded. Serialized as <c>{number}.json</c>.
 /// Fields are normalized across providers so a browser can render them uniformly.
 /// </summary>
-public sealed class BackedUpIssue : IBackedUpProjectItem
+public sealed class BackedUpIssue : IBackedUpArtifactItem
 {
     public required long Number { get; init; }
 
@@ -147,7 +131,7 @@ public sealed class BackedUpIssue : IBackedUpProjectItem
 /// A backed-up merge/pull request with its comment thread embedded. Serialized as
 /// <c>{number}.json</c> under <c>merge-requests/</c>.
 /// </summary>
-public sealed class BackedUpMergeRequest : IBackedUpProjectItem
+public sealed class BackedUpMergeRequest : IBackedUpArtifactItem
 {
     public required long Number { get; init; }
 

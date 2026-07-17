@@ -26,7 +26,18 @@ public static class AppLogger
 
     public const string DefaultLogLevel = "info";
 
-    public static IReadOnlyList<string> SupportedLogLevels => ["debug", "info", "warn", "error"];
+    // The one place a configured level name is tied to its enum value. SupportedLogLevels feeds the
+    // settings validator's error message and TryParseLogLevel decides what it accepts, so deriving both
+    // from this table keeps that message from ever disagreeing with what actually loads.
+    private static readonly Dictionary<string, AppLogLevel> LevelsByName = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["debug"] = AppLogLevel.Debug,
+        ["info"] = AppLogLevel.Info,
+        ["warn"] = AppLogLevel.Warn,
+        ["error"] = AppLogLevel.Error
+    };
+
+    public static IReadOnlyList<string> SupportedLogLevels => [.. LevelsByName.Keys];
 
     static AppLogger()
     {
@@ -44,35 +55,18 @@ public static class AppLogger
 
     public static bool TryParseLogLevel(string? value, out AppLogLevel level)
     {
-        switch (value?.Trim().ToLowerInvariant())
+        if (value is not null && LevelsByName.TryGetValue(value.Trim(), out level))
         {
-            case "debug":
-                level = AppLogLevel.Debug;
-                return true;
-            case "info":
-                level = AppLogLevel.Info;
-                return true;
-            case "warn":
-                level = AppLogLevel.Warn;
-                return true;
-            case "error":
-                level = AppLogLevel.Error;
-                return true;
-            default:
-                level = AppLogLevel.Info;
-                return false;
+            return true;
         }
+
+        level = AppLogLevel.Info;
+        return false;
     }
 
     public static string ToConfigValue(AppLogLevel level)
     {
-        return level switch
-        {
-            AppLogLevel.Debug => "debug",
-            AppLogLevel.Info => "info",
-            AppLogLevel.Warn => "warn",
-            _ => "error"
-        };
+        return LevelsByName.First(pair => pair.Value == level).Key;
     }
 
     public static void SetMinimumLevel(AppLogLevel level)

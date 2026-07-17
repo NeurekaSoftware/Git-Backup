@@ -25,16 +25,6 @@ public static class CronScheduleParser
         return false;
     }
 
-    public static CronExpression Parse(string expression)
-    {
-        if (TryParse(expression, out var schedule, out var error) && schedule is not null)
-        {
-            return schedule;
-        }
-
-        throw new InvalidOperationException($"Invalid cron expression '{expression}': {error}");
-    }
-
     private static bool TryParseInternal(string expression, CronFormat format, out CronExpression? schedule)
     {
         try

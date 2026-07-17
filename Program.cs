@@ -109,16 +109,10 @@ class Program
 
     private static void ApplyLogLevel(string? configuredLogLevel)
     {
-        if (!AppLogger.TryParseLogLevel(configuredLogLevel, out var parsedLevel))
-        {
-            AppLogger.SetMinimumLevel(AppLogLevel.Info);
-            AppLogger.Warn(
-                "Invalid logging.logLevel value {ConfiguredLogLevel}. Falling back to {FallbackLevel}.",
-                configuredLogLevel,
-                AppLogger.DefaultLogLevel);
-            return;
-        }
-
+        // Only ever called with the level from a successful load, which the loader has already rejected
+        // if unrecognized and normalized otherwise, so this always parses. TryParseLogLevel still yields
+        // the default level if that ever stops holding.
+        AppLogger.TryParseLogLevel(configuredLogLevel, out var parsedLevel);
         AppLogger.SetMinimumLevel(parsedLevel);
         AppLogger.Info("Active log level set. logLevel={LogLevel}.", AppLogger.ToConfigValue(parsedLevel));
     }

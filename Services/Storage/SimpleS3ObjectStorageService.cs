@@ -106,11 +106,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             throw new DirectoryNotFoundException($"Directory '{localDirectory}' does not exist.");
         }
 
-        var normalizedObjectKey = objectKey.Trim('/');
-        if (string.IsNullOrWhiteSpace(normalizedObjectKey))
-        {
-            throw new ArgumentException("Object key is required.", nameof(objectKey));
-        }
+        var normalizedObjectKey = NormalizeObjectKey(objectKey, nameof(objectKey));
 
         cancellationToken.ThrowIfCancellationRequested();
         AppLogger.Debug(
@@ -183,11 +179,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
     {
         // A metadata document is small and already in memory, so a single PutObject is cheaper than a
         // multipart round trip (initiate + part + complete).
-        var normalizedObjectKey = objectKey.Trim('/');
-        if (string.IsNullOrWhiteSpace(normalizedObjectKey))
-        {
-            throw new ArgumentException("Object key is required.", nameof(objectKey));
-        }
+        var normalizedObjectKey = NormalizeObjectKey(objectKey, nameof(objectKey));
 
         // Store the JSON gzip-compressed with Content-Encoding: gzip. Issue/MR documents and manifests
         // are repetitive text that gzips several times over, cutting upload egress and stored size; a
@@ -233,11 +225,7 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         long? knownLength,
         CancellationToken cancellationToken)
     {
-        var normalizedObjectKey = objectKey.Trim('/');
-        if (string.IsNullOrWhiteSpace(normalizedObjectKey))
-        {
-            throw new ArgumentException("Object key is required.", nameof(objectKey));
-        }
+        var normalizedObjectKey = NormalizeObjectKey(objectKey, nameof(objectKey));
 
         var resolvedContentType = string.IsNullOrWhiteSpace(contentType) ? MimeTypeResolver.DefaultContentType : contentType;
 
@@ -446,11 +434,8 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
     private static string ResolveEndpoint(string configuredEndpoint, string bucket, bool forcePathStyle)
     {
+        // The constructor already rejected a blank endpoint, so this only has to normalize a real one.
         var endpoint = configuredEndpoint.Trim();
-        if (string.IsNullOrWhiteSpace(endpoint))
-        {
-            return endpoint;
-        }
 
         if (endpoint.Contains('{'))
         {
@@ -512,9 +497,26 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            throw new ArgumentException($"Storage configuration '{name}' is required.", name);
+            // No paramName: `name` is a settings path, not an argument, and passing it as one both
+            // breaks the ArgumentException contract and repeats the path in the rendered message.
+            throw new ArgumentException($"Storage configuration '{name}' is required.");
         }
 
         return value;
+    }
+
+    /// <summary>
+    /// Trims the surrounding slashes an object key must not carry and rejects an empty one. Shared by
+    /// every upload path so the bucket's only writers cannot disagree about what a valid key is.
+    /// </summary>
+    private static string NormalizeObjectKey(string objectKey, string paramName)
+    {
+        var normalized = objectKey.Trim('/');
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            throw new ArgumentException("Object key is required.", paramName);
+        }
+
+        return normalized;
     }
 }
