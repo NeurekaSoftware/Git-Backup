@@ -428,9 +428,11 @@ public sealed class GitLabRepositoryProviderClient
 
     protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
     {
-        var client = CreateClient(token: string.Empty);
-        client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", credential.ApiKey!.Trim());
-        return client;
+        // Authenticate with an OAuth-style Bearer header (GitLab accepts a personal/group access token
+        // as a Bearer token) instead of the custom PRIVATE-TOKEN header. The .NET handler strips the
+        // standard Authorization header on a cross-host redirect, so the token is not forwarded when an
+        // asset download 302-redirects to object storage on a different host.
+        return CreateClient(credential.ApiKey);
     }
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)

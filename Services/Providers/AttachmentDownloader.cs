@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -21,6 +23,8 @@ internal static class AttachmentDownloader
         string downloadUrl,
         CancellationToken cancellationToken)
     {
+        EnsureSafeDownloadHost(downloadUrl);
+
         using var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
 
@@ -84,6 +88,58 @@ internal static class AttachmentDownloader
     {
         var hash = SHA1.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(hash, 0, 4).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Rejects an attachment URL that is not http(s) or that targets a private, loopback, or link-local
+    /// address, so a crafted provider response cannot make the authenticated client reach an internal
+    /// endpoint (e.g. a cloud metadata service). This checks the literal host; it does not resolve DNS
+    /// or re-check redirect hops.
+    /// </summary>
+    private static void EnsureSafeDownloadHost(string downloadUrl)
+    {
+        if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new InvalidOperationException($"Attachment URL '{RedactUrl(downloadUrl)}' is not an http or https URL.");
+        }
+
+        if (IPAddress.TryParse(uri.Host, out var address) && IsPrivateOrLocal(address))
+        {
+            throw new InvalidOperationException(
+                $"Attachment URL '{RedactUrl(downloadUrl)}' targets a private, loopback, or link-local address.");
+        }
+    }
+
+    private static bool IsPrivateOrLocal(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        if (IPAddress.IsLoopback(address))
+        {
+            return true;
+        }
+
+        var bytes = address.GetAddressBytes();
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            return bytes[0] is 0 or 10
+                   || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
+                   || (bytes[0] == 192 && bytes[1] == 168)
+                   || (bytes[0] == 169 && bytes[1] == 254);
+        }
+
+        if (address.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            return address.IsIPv6LinkLocal
+                   || address.IsIPv6SiteLocal
+                   || (bytes[0] & 0xFE) == 0xFC; // fc00::/7 unique local addresses
+        }
+
+        return false;
     }
 
     private static async Task CopyWithLimitAsync(
