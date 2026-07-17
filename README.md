@@ -133,26 +133,41 @@ concurrency:
   metadata: 1
 ```
 
-Each entry under `repositories` accepts:
+Each entry under `repositories` accepts the options below. **Common** options apply to both modes; the rest belong to `mode: provider` or `mode: url`.
+
+**Common**
 
 | Option | Description | Default |
 |---|---|---|
 | `mode` | `provider` (discover all repositories for an account) or `url` (specific repositories). | *required* |
-| `provider` | Forge to discover: `github`, `gitlab`, or `forgejo`. Provider mode. | *required (provider)* |
-| `baseUrl` | Base URL of a self-hosted forge instance. Provider mode. | forge's public URL |
-| `includeStarred` | Also back up repositories the account has starred. Provider mode. | `false` |
-| `includeSnippets` | Also back up your GitHub gists and GitLab snippets. GitHub also backs up starred gists when `includeStarred` is on; GitLab has no starred snippets. Provider mode. | `false` |
-| `includeIssues` | Back up issues and their comment threads as JSON. Provider mode. | `false` |
-| `includeIssueArtifacts` | Also download files attached to issues and their comments. Requires `includeIssues`. Provider mode. | `false` |
-| `includeMergeRequests` | Back up pull/merge requests and their comment threads as JSON. Provider mode. | `false` |
-| `includeMergeRequestsArtifacts` | Also download files attached to pull/merge requests and their comments. Requires `includeMergeRequests`. Provider mode. | `false` |
-| `includeReleases` | Back up releases (tag, notes, and asset references) as JSON. Provider mode. | `false` |
-| `includeReleaseArtifacts` | Also download release asset files. Requires `includeReleases`. On GitLab this downloads attached asset-link files hosted on your instance only — auto-generated source archives are skipped (the repo mirror already captures them) and external links are recorded as references without being downloaded. Provider mode. | `false` |
-| `url` | A single repository URL, or a list of repository URLs. URL mode. | *required (url)* |
-| `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required (provider)* |
+| `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required in provider mode* |
 | `lfs` | Back up Git LFS objects. | `true` |
 | `cache` | Keep a local mirror and `git fetch` it each run for fast subsequent syncs. Set `false` to clone fresh each run and delete the local copy after a successful upload, bounding local disk to one repository at a time. | `true` |
 | `enabled` | Set `false` to skip the job. | `true` |
+
+**Provider mode** — `mode: provider`
+
+| Option | Description | Default |
+|---|---|---|
+| `provider` | Forge to discover: `github`, `gitlab`, or `forgejo`. | *required* |
+| `baseUrl` | Base URL of a self-hosted forge instance. | forge's public URL |
+| `includeStarred` | Also back up repositories the account has starred. | `false` |
+| `includeSnippets` | Also back up your GitHub gists and GitLab snippets. GitHub also backs up starred gists when `includeStarred` is on; GitLab has no starred snippets. | `false` |
+| `includeIssues` | Back up issues and their comment threads as JSON. | `false` |
+| `includeIssueArtifacts` | Also download files attached to issues and their comments. Requires `includeIssues`. | `false` |
+| `includeMergeRequests` | Back up pull/merge requests and their comment threads as JSON. | `false` |
+| `includeMergeRequestsArtifacts` | Also download files attached to pull/merge requests and their comments. Requires `includeMergeRequests`. | `false` |
+| `includeReleases` | Back up releases (tag, notes, and asset references) as JSON. | `false` |
+| `includeReleaseArtifacts` | Also download release asset files. Requires `includeReleases`. | `false` |
+
+> [!NOTE]
+> On GitLab, `includeReleaseArtifacts` downloads only asset-link files hosted on your own instance. Auto-generated source archives are skipped (the repository mirror already captures them), and external links are recorded as references without being downloaded.
+
+**URL mode** — `mode: url`
+
+| Option | Description | Default |
+|---|---|---|
+| `url` | A single repository URL, or a list of repository URLs. | *required* |
 
 Local mirrors for repositories that are removed from the config (or disabled) are cleaned off disk automatically on the next run.
 
@@ -166,8 +181,32 @@ The optional `concurrency` section tunes parallelism and defaults to fully seque
 > [!TIP]
 > Raising these overlaps network-bound work, but increases concurrent memory, local disk, and provider/S3 request pressure — raise gradually and watch for rate limiting (HTTP 429). With `cache: false`, running repositories in parallel multiplies peak local disk by the degree.
 
-> [!NOTE]
-> Backing up GitHub gists (`includeSnippets`) requires a **classic** personal access token with the `gist` scope — fine-grained tokens cannot read gists.
+### Credentials
+
+Each key under `credentials` is a forge token, referenced by a repository job's `credential`. Every operation this tool performs is read-only, so create each token with the least privilege the features you enable require.
+
+**GitHub** — create a **classic** personal access token; fine-grained tokens cannot read gists.
+
+| Scope | Needed for |
+|---|---|
+| `repo` | Private repositories, plus their issues, pull requests, comments, releases, and attachments |
+| `gist` | Gists (`includeSnippets`) |
+
+Backing up only public repositories? `public_repo` replaces `repo`. Not backing up gists? Omit `gist`.
+
+**GitLab** — create a personal access token with:
+
+| Scope | Needed for |
+|---|---|
+| `read_api` | Discovering repositories and reading issues, merge requests, releases, and snippets |
+| `read_repository` | Cloning repository contents, including private repositories and LFS objects |
+
+**Forgejo** — create an access token granting read access to:
+
+| Scope | Needed for |
+|---|---|
+| `read:repository` | Repositories, starred repositories, pull requests, releases, and attachments |
+| `read:issue` | Issues and issue / pull-request comment threads |
 
 ### Keeping secrets out of settings.yaml
 
@@ -194,4 +233,12 @@ A referenced variable that is not set, a file that cannot be read, or a field gi
 > [!IMPORTANT]
 > Issues, pull/merge requests, releases, and their attachments are backed up for **owned** repositories only. They are never fetched for **starred** repositories — even when `includeStarred` is enabled — nor for gists or snippets.
 
-Issues, pull/merge requests, and releases are stored as latest-state JSON documents (issues and MRs each embed their comment thread) next to the repository's Git snapshots, under `issues/{number}.json`, `merge-requests/{number}.json`, and `releases/{tag}.json`, with an `index.json` manifest per collection and downloaded files under `{collection}/attachments/{id}/`. Each run overwrites these in place and removes documents for items that no longer exist upstream.
+Issues, pull/merge requests, and releases are stored as latest-state JSON documents (issues and MRs each embed their comment thread) next to the repository's Git snapshots. Each run overwrites these in place and removes documents for items that no longer exist upstream.
+
+| Item | Stored at |
+|---|---|
+| Issues | `issues/{number}.json` |
+| Pull / merge requests | `merge-requests/{number}.json` |
+| Releases | `releases/{tag}.json` |
+| Per-collection manifest | `{collection}/index.json` |
+| Downloaded attachments | `{collection}/attachments/{id}/` |
