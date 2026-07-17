@@ -98,16 +98,12 @@ public sealed class GitHubRepositoryProviderClient
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            var issues = await CollectAsync(
+            return await CollectWithCommentsAsync(
                 client,
+                context.Concurrency,
                 page => $"{baseUrl}/repos/{repositoryPath}/issues?state=all&per_page={PageSize}&page={page}",
                 MapIssue,
                 PageIsFull(PageSize),
-                cancellationToken);
-
-            await Parallel.ForEachAsync(
-                issues,
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
                 async (issue, token) =>
                 {
                     issue.Comments = await CollectAsync(
@@ -118,9 +114,8 @@ public sealed class GitHubRepositoryProviderClient
                         token);
 
                     issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
-                });
-
-            return issues;
+                },
+                cancellationToken);
         }
     }
 
@@ -137,16 +132,12 @@ public sealed class GitHubRepositoryProviderClient
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            var pulls = await CollectAsync(
+            return await CollectWithCommentsAsync(
                 client,
+                context.Concurrency,
                 page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&per_page={PageSize}&page={page}",
                 MapGiteaPullRequest,
                 PageIsFull(PageSize),
-                cancellationToken);
-
-            await Parallel.ForEachAsync(
-                pulls,
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
                 async (pull, token) =>
                 {
                     // Pull requests are issues on GitHub, so their discussion comments live on the
@@ -159,9 +150,8 @@ public sealed class GitHubRepositoryProviderClient
                         token);
 
                     pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
-                });
-
-            return pulls;
+                },
+                cancellationToken);
         }
     }
 
@@ -229,44 +219,20 @@ public sealed class GitHubRepositoryProviderClient
         string? body,
         IEnumerable<BackedUpComment> comments)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var attachments = new List<BackedUpAttachment>();
-
-        void Scan(string? text)
+        return ScanBodyAndComments(body, comments, AttachmentReference, match =>
         {
-            if (string.IsNullOrEmpty(text))
+            var url = match.Value;
+
+            // Persist and key off the query-free URL so the short-lived ?jwt= signing token is never
+            // stored (and the key stays stable across runs); the full URL is kept only for download.
+            var reference = AttachmentDownloader.RedactUrl(url);
+            return new BackedUpAttachment
             {
-                return;
-            }
-
-            foreach (Match match in AttachmentReference.Matches(text))
-            {
-                var url = match.Value;
-
-                // Persist and key off the query-free URL so the short-lived ?jwt= signing token is never
-                // stored (and the key stays stable across runs); the full URL is kept only for download.
-                var reference = AttachmentDownloader.RedactUrl(url);
-                if (!seen.Add(reference))
-                {
-                    continue;
-                }
-
-                attachments.Add(new BackedUpAttachment
-                {
-                    FileName = $"{AttachmentDownloader.ShortHash(reference)}-{AttachmentDownloader.SanitizeFileName(LastPathSegment(reference))}",
-                    OriginalPath = reference,
-                    DownloadUrl = url
-                });
-            }
-        }
-
-        Scan(body);
-        foreach (var comment in comments)
-        {
-            Scan(comment.Body);
-        }
-
-        return attachments;
+                FileName = $"{AttachmentDownloader.ShortHash(reference)}-{AttachmentDownloader.SanitizeFileName(LastPathSegment(reference))}",
+                OriginalPath = reference,
+                DownloadUrl = url
+            };
+        });
     }
 
     private static string LastPathSegment(string url)

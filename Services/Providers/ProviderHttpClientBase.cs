@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
 using GitBackup.Services.Paths;
@@ -258,10 +259,7 @@ public abstract class ProviderHttpClientBase
             throw new InvalidOperationException($"Invalid repository URL '{cloneUrl}'.");
         }
 
-        var segments = uri.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(Uri.UnescapeDataString)
-            .ToArray();
+        var segments = GitRepositoryUrl.SplitUnescapedSegments(uri);
 
         if (segments.Length < 2)
         {
@@ -374,6 +372,73 @@ public abstract class ProviderHttpClientBase
         return (_, _, itemCount) => itemCount >= pageSize;
     }
 
+    /// <summary>
+    /// Lists a paginated collection, then populates each item (its comments and attachments) in
+    /// parallel up to <paramref name="concurrency"/>. The list/map/paging and the parallel fan-out are
+    /// shared here; <paramref name="populateItem"/> carries the only per-provider work — which comment
+    /// endpoint to read and how attachments are gathered.
+    /// </summary>
+    protected static async Task<List<TItem>> CollectWithCommentsAsync<TItem>(
+        HttpClient client,
+        int concurrency,
+        Func<int, string> buildListUri,
+        Func<JsonElement, TItem?> mapItem,
+        NextPageStrategy hasNextPage,
+        Func<TItem, CancellationToken, Task> populateItem,
+        CancellationToken cancellationToken)
+        where TItem : class
+    {
+        var items = await CollectAsync(client, buildListUri, mapItem, hasNextPage, cancellationToken);
+
+        await Parallel.ForEachAsync(
+            items,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, concurrency), CancellationToken = cancellationToken },
+            async (item, token) => await populateItem(item, token));
+
+        return items;
+    }
+
+    /// <summary>
+    /// Scans an item body and its comment bodies for attachment references matching <paramref
+    /// name="pattern"/>, builds each match via <paramref name="build"/>, and dedupes by
+    /// <see cref="BackedUpAttachment.OriginalPath"/> (first wins). Shared by providers that embed
+    /// attachments inline in markdown (GitHub, GitLab).
+    /// </summary>
+    protected static IReadOnlyList<BackedUpAttachment> ScanBodyAndComments(
+        string? body,
+        IEnumerable<BackedUpComment> comments,
+        Regex pattern,
+        Func<Match, BackedUpAttachment> build)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var attachments = new List<BackedUpAttachment>();
+
+        void Scan(string? text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            foreach (Match match in pattern.Matches(text))
+            {
+                var attachment = build(match);
+                if (seen.Add(attachment.OriginalPath))
+                {
+                    attachments.Add(attachment);
+                }
+            }
+        }
+
+        Scan(body);
+        foreach (var comment in comments)
+        {
+            Scan(comment.Body);
+        }
+
+        return attachments;
+    }
+
     // --- Shared Gitea-lineage (GitHub + Forgejo) JSON mappers. GitLab uses its own field names. ---
 
     protected static DiscoveredRepository? MapGiteaRepository(JsonElement item, bool isStarred)
@@ -392,10 +457,19 @@ public abstract class ProviderHttpClientBase
         };
     }
 
-    protected static BackedUpComment? MapGiteaComment(JsonElement item)
+    /// <summary>
+    /// Maps a comment, reading the author from <paramref name="authorObject"/>.<paramref
+    /// name="authorProperty"/>. Providers differ only in that path (GitHub/Forgejo <c>user.login</c>,
+    /// GitLab <c>author.username</c>) and whether a <c>system</c> flag distinguishes generated notes.
+    /// </summary>
+    protected static BackedUpComment? MapComment(
+        JsonElement item,
+        string authorObject,
+        string authorProperty,
+        bool readSystemFlag)
     {
         var body = GetStringOrNull(item, "body");
-        var author = GetNestedStringOrNull(item, "user", "login");
+        var author = GetNestedStringOrNull(item, authorObject, authorProperty);
         if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(author))
         {
             return null;
@@ -408,8 +482,14 @@ public abstract class ProviderHttpClientBase
             Body = body,
             CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
             UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
-            System = false
+            System = readSystemFlag && GetBoolean(item, "system")
         };
+    }
+
+    /// <summary>Maps a Gitea-lineage comment (GitHub, Forgejo): author at <c>user.login</c>.</summary>
+    protected static BackedUpComment? MapGiteaComment(JsonElement item)
+    {
+        return MapComment(item, "user", "login", readSystemFlag: false);
     }
 
     /// <summary>

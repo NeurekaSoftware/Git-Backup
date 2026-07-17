@@ -71,16 +71,12 @@ public sealed class ForgejoRepositoryProviderClient
         var repositoryPath = ResolveRepositoryPath(context);
         using var client = CreateAuthenticatedClient(credential);
 
-        var issues = await CollectAsync(
+        return await CollectWithCommentsAsync(
             client,
+            context.Concurrency,
             page => $"{baseUrl}/repos/{repositoryPath}/issues?type=issues&state=all&limit={PageSize}&page={page}",
             MapIssue,
             PageIsFull(PageSize),
-            cancellationToken);
-
-        await Parallel.ForEachAsync(
-            issues,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
             async (issue, token) =>
             {
                 var (comments, commentAttachments) = await FetchCommentsAsync(
@@ -90,9 +86,8 @@ public sealed class ForgejoRepositoryProviderClient
 
                 issue.Comments = comments;
                 issue.Attachments = MergeAttachments(issue.Attachments, commentAttachments);
-            });
-
-        return issues;
+            },
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
@@ -109,16 +104,12 @@ public sealed class ForgejoRepositoryProviderClient
         var repositoryPath = ResolveRepositoryPath(context);
         using var client = CreateAuthenticatedClient(credential);
 
-        var pulls = await CollectAsync(
+        return await CollectWithCommentsAsync(
             client,
+            context.Concurrency,
             page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&limit={PageSize}&page={page}",
             MapPullRequest,
             PageIsFull(PageSize),
-            cancellationToken);
-
-        await Parallel.ForEachAsync(
-            pulls,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
             async (pull, token) =>
             {
                 // Pull requests share the issue comment thread in the Gitea/Forgejo API.
@@ -129,9 +120,8 @@ public sealed class ForgejoRepositoryProviderClient
 
                 pull.Comments = comments;
                 pull.Attachments = MergeAttachments(pull.Attachments, commentAttachments);
-            });
-
-        return pulls;
+            },
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(

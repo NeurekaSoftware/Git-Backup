@@ -89,16 +89,12 @@ public sealed class GitLabRepositoryProviderClient
         var projectId = ResolveProjectIdentifier(context);
         using var client = CreateAuthenticatedClient(credential);
 
-        var issues = await CollectAsync(
+        return await CollectWithCommentsAsync(
             client,
+            context.Concurrency,
             page => $"{baseUrl}/projects/{projectId}/issues?per_page=100&page={page}",
             MapIssue,
             HasNextPage,
-            cancellationToken);
-
-        await Parallel.ForEachAsync(
-            issues,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
             async (issue, token) =>
             {
                 issue.Comments = await CollectAsync(
@@ -109,9 +105,8 @@ public sealed class GitLabRepositoryProviderClient
                     token);
 
                 issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
-            });
-
-        return issues;
+            },
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
@@ -128,16 +123,12 @@ public sealed class GitLabRepositoryProviderClient
         var projectId = ResolveProjectIdentifier(context);
         using var client = CreateAuthenticatedClient(credential);
 
-        var mergeRequests = await CollectAsync(
+        return await CollectWithCommentsAsync(
             client,
+            context.Concurrency,
             page => $"{baseUrl}/projects/{projectId}/merge_requests?per_page=100&page={page}",
             MapMergeRequest,
             HasNextPage,
-            cancellationToken);
-
-        await Parallel.ForEachAsync(
-            mergeRequests,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
             async (mergeRequest, token) =>
             {
                 mergeRequest.Comments = await CollectAsync(
@@ -148,9 +139,8 @@ public sealed class GitLabRepositoryProviderClient
                     token);
 
                 mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
-            });
-
-        return mergeRequests;
+            },
+            cancellationToken);
     }
 
     public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
@@ -282,22 +272,7 @@ public sealed class GitLabRepositoryProviderClient
 
     private static BackedUpComment? MapNote(JsonElement item)
     {
-        var body = GetStringOrNull(item, "body");
-        var author = GetNestedStringOrNull(item, "author", "username");
-        if (string.IsNullOrWhiteSpace(body) && string.IsNullOrWhiteSpace(author))
-        {
-            return null;
-        }
-
-        return new BackedUpComment
-        {
-            Id = GetInt64OrNull(item, "id"),
-            Author = author,
-            Body = body,
-            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
-            UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
-            System = GetBoolean(item, "system")
-        };
+        return MapComment(item, "author", "username", readSystemFlag: true);
     }
 
     private static BackedUpRelease? MapRelease(JsonElement item, string instanceHost)
@@ -388,42 +363,19 @@ public sealed class GitLabRepositoryProviderClient
         IEnumerable<BackedUpComment> comments)
     {
         var projectUrl = (context.WebUrl ?? GitRepositoryUrl.TrimGitSuffix(context.CloneUrl)).TrimEnd('/');
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var attachments = new List<BackedUpAttachment>();
 
-        void Scan(string? text)
+        return ScanBodyAndComments(body, comments, UploadReference, match =>
         {
-            if (string.IsNullOrEmpty(text))
+            var sha = match.Groups[1].Value;
+            var rawName = match.Groups[2].Value;
+            var originalPath = $"/uploads/{sha}/{rawName}";
+            return new BackedUpAttachment
             {
-                return;
-            }
-
-            foreach (Match match in UploadReference.Matches(text))
-            {
-                var sha = match.Groups[1].Value;
-                var rawName = match.Groups[2].Value;
-                var originalPath = $"/uploads/{sha}/{rawName}";
-                if (!seen.Add(originalPath))
-                {
-                    continue;
-                }
-
-                attachments.Add(new BackedUpAttachment
-                {
-                    FileName = $"{sha[..8]}-{AttachmentDownloader.SanitizeFileName(rawName)}",
-                    OriginalPath = originalPath,
-                    DownloadUrl = $"{projectUrl}{originalPath}"
-                });
-            }
-        }
-
-        Scan(body);
-        foreach (var comment in comments)
-        {
-            Scan(comment.Body);
-        }
-
-        return attachments;
+                FileName = $"{sha[..8]}-{AttachmentDownloader.SanitizeFileName(rawName)}",
+                OriginalPath = originalPath,
+                DownloadUrl = $"{projectUrl}{originalPath}"
+            };
+        });
     }
 
     protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)

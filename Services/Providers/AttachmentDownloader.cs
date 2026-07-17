@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
+using GitBackup.Services.Paths;
 
 namespace GitBackup.Services.Providers;
 
@@ -15,8 +15,6 @@ namespace GitBackup.Services.Providers;
 internal static class AttachmentDownloader
 {
     public const long MaxAttachmentBytes = 100L * 1024 * 1024;
-
-    private static readonly Regex InvalidFileNameCharacters = new("[^A-Za-z0-9._-]+", RegexOptions.Compiled);
 
     public static async Task<Stream> DownloadToMemoryAsync(
         HttpClient client,
@@ -64,7 +62,7 @@ internal static class AttachmentDownloader
         }
 
         candidate = Uri.UnescapeDataString(candidate);
-        var sanitized = InvalidFileNameCharacters.Replace(candidate, "-").Trim('-', '.');
+        var sanitized = GitRepositoryUrl.InvalidStorageSegmentCharacters.Replace(candidate, "-").Trim('-', '.');
         return string.IsNullOrWhiteSpace(sanitized) ? "file" : sanitized;
     }
 
