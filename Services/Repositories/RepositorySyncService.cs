@@ -314,6 +314,35 @@ public sealed class RepositorySyncService
             return (0, 0, false);
         }
 
+        // Collapse duplicate URLs to their first occurrence: the same repository listed twice would
+        // otherwise be cloned and uploaded twice. Comparison is case-insensitive because storage keys
+        // lowercase every segment, so case-only variants map to the same destination. Warn on each one
+        // dropped so a copy-paste mistake in the config is visible.
+        var repositoryUrls = new List<string>(repository.Urls.Count);
+        var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var configuredUrl in repository.Urls)
+        {
+            if (string.IsNullOrWhiteSpace(configuredUrl))
+            {
+                continue;
+            }
+
+            if (seenUrls.Add(configuredUrl.Trim()))
+            {
+                repositoryUrls.Add(configuredUrl);
+            }
+            else
+            {
+                AppLogger.Warn("Ignoring duplicate repository URL in URL job. repository={RepositoryUrl}.", configuredUrl);
+            }
+        }
+
+        if (repositoryUrls.Count == 0)
+        {
+            AppLogger.Warn("Skipping URL repository job because it has no usable url.");
+            return (0, 0, false);
+        }
+
         GitCredential? gitCredential = null;
         if (!string.IsNullOrWhiteSpace(repository.Credential))
         {
@@ -334,15 +363,10 @@ public sealed class RepositorySyncService
         var skippedInaccessibleRepositories = 0;
 
         await Parallel.ForEachAsync(
-            repository.Urls,
+            repositoryUrls,
             new ParallelOptions { MaxDegreeOfParallelism = repositoryConcurrency, CancellationToken = cancellationToken },
             async (url, token) =>
             {
-                if (string.IsNullOrWhiteSpace(url))
-                {
-                    return;
-                }
-
                 try
                 {
                     var pathInfo = RepositoryPathParser.Parse(url);
