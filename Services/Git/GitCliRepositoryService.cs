@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using GitBackup.Runtime;
+using GitBackup.Services.Paths;
 
 namespace GitBackup.Services.Git;
 
@@ -23,6 +24,15 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
         {
             throw new InvalidOperationException(
                 $"Unsupported repository URL '{remoteUrl}'. Only http and https clone URLs are allowed.");
+        }
+
+        // Never put a credential on the wire in the clear. A plaintext-http remote to a non-loopback
+        // host would send the Authorization header base64-but-unencrypted, so anyone on-path could
+        // recover the token; refuse rather than leak it. Loopback http stays allowed for local testing.
+        if (credential is not null && IsPlaintextHttpToRemoteHost(remoteUrl))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to send credentials to '{remoteUrl}' over plaintext http. Use https, or remove the credential for this remote.");
         }
 
         var hasMirror = await IsBareRepositoryAsync(localPath, cancellationToken);
@@ -226,9 +236,14 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
 
     private static bool IsSupportedTransport(string remoteUrl)
     {
+        return GitRepositoryUrl.TryCreateHttpUrl(remoteUrl, out _);
+    }
+
+    private static bool IsPlaintextHttpToRemoteHost(string remoteUrl)
+    {
         return Uri.TryCreate(remoteUrl, UriKind.Absolute, out var uri)
-               && (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
-                   || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
+               && uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+               && !uri.IsLoopback;
     }
 
     private sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError);

@@ -22,34 +22,55 @@ public abstract class ProviderHttpClientBase
         PooledConnectionLifetime = TimeSpan.FromMinutes(5)
     };
 
+    // Attachment downloads follow provider-supplied URLs and must validate every redirect hop
+    // themselves (see AttachmentDownloader), so this handler never auto-follows redirects.
+    private static readonly SocketsHttpHandler SharedNoRedirectHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        AllowAutoRedirect = false
+    };
+
     // The product/version is constant for the process lifetime, so build the header once instead of on
     // every CreateClient call. ProductInfoHeaderValue is immutable and safe to share across clients.
     private static readonly ProductInfoHeaderValue UserAgent = CreateUserAgent();
 
-    protected static HttpClient CreateClient(string? token)
+    // Builds a bare client (user-agent + Accept) over the given handler; the provider's authentication
+    // is layered on separately by ApplyAuthentication.
+    private static HttpClient CreateClient(SocketsHttpHandler handler)
     {
-        var client = new HttpClient(SharedHandler, disposeHandler: false);
+        var client = new HttpClient(handler, disposeHandler: false);
         client.DefaultRequestHeaders.UserAgent.Add(UserAgent);
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        if (!string.IsNullOrWhiteSpace(token))
-        {
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
-        }
-
         return client;
     }
 
     /// <summary>
-    /// Creates an HTTP client carrying the provider's authentication for the given credential. The auth
-    /// scheme is the only per-provider difference (GitHub/Forgejo set an Authorization header, GitLab a
-    /// PRIVATE-TOKEN header), so it is the single abstract seam over the shared client setup.
+    /// Applies the provider's authentication scheme to a client's default headers. The auth scheme is
+    /// the only per-provider difference (GitHub/GitLab a Bearer token, Forgejo a <c>token</c> header),
+    /// so it is the single abstract seam over the shared client setup.
     /// </summary>
-    protected abstract HttpClient CreateAuthenticatedClient(CredentialConfig credential);
+    protected abstract void ApplyAuthentication(HttpClient client, CredentialConfig credential);
+
+    /// <summary>Creates a connection-pooling, redirect-following client carrying the provider's auth.</summary>
+    protected HttpClient CreateAuthenticatedClient(CredentialConfig credential)
+    {
+        var client = CreateClient(SharedHandler);
+        ApplyAuthentication(client, credential);
+        return client;
+    }
+
+    // Creates an auth-carrying client that never auto-redirects, so attachment downloads can validate
+    // each redirect hop before following it.
+    private HttpClient CreateAuthenticatedAttachmentClient(CredentialConfig credential)
+    {
+        var client = CreateClient(SharedNoRedirectHandler);
+        ApplyAuthentication(client, credential);
+        return client;
+    }
 
     /// <summary>
     /// Downloads an issue/MR/release attachment into memory. Identical across providers once the auth
-    /// scheme is supplied by <see cref="CreateAuthenticatedClient"/>.
+    /// scheme is supplied by <see cref="ApplyAuthentication"/>.
     /// </summary>
     public async Task<Stream> OpenAttachmentAsync(
         ProjectMetadataContext context,
@@ -57,7 +78,7 @@ public abstract class ProviderHttpClientBase
         string downloadUrl,
         CancellationToken cancellationToken)
     {
-        using var client = CreateAuthenticatedClient(credential);
+        using var client = CreateAuthenticatedAttachmentClient(credential);
         return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
     }
 

@@ -262,7 +262,7 @@ public sealed class RepositorySyncService
             case DiscoveredRepositoryKind.Snippet:
                 var projectInfo = RepositoryPathParser.Parse(discoveredRepository.ParentUrl!);
                 var projectPrefix = StorageKeyBuilder.BuildProviderRepositoryPrefix(provider, projectInfo);
-                return $"{projectPrefix}/snippets/{discoveredRepository.Identifier}";
+                return StorageKeyBuilder.BuildNestedSnippetPrefix(projectPrefix, discoveredRepository.Identifier!);
 
             default:
                 var pathInfo = RepositoryPathParser.Parse(discoveredRepository.CloneUrl);

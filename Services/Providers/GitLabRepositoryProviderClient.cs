@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
@@ -382,13 +383,16 @@ public sealed class GitLabRepositoryProviderClient
         });
     }
 
-    protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
+    protected override void ApplyAuthentication(HttpClient client, CredentialConfig credential)
     {
         // Authenticate with an OAuth-style Bearer header (GitLab accepts a personal/group access token
-        // as a Bearer token) instead of the custom PRIVATE-TOKEN header. The .NET handler strips the
-        // standard Authorization header on a cross-host redirect, so the token is not forwarded when an
-        // asset download 302-redirects to object storage on a different host.
-        return CreateClient(credential.ApiKey);
+        // as a Bearer token) instead of the custom PRIVATE-TOKEN header. Attachment downloads send this
+        // header only to the original host (see AttachmentDownloader), so the token is not forwarded
+        // when an asset download 302-redirects to object storage on a different host.
+        if (!string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", credential.ApiKey.Trim());
+        }
     }
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)

@@ -37,10 +37,29 @@ public static class StorageKeyBuilder
             "snippets",
             "provider",
             provider.Trim().ToLowerInvariant(),
-            identifier.Trim()
+            SanitizeIdentifier(identifier)
         };
 
         return string.Join('/', segments);
+    }
+
+    /// <summary>
+    /// Builds the prefix for a project snippet nested under its owning repository:
+    /// <c>{repositoryPrefix}/snippets/{identifier}</c>.
+    /// </summary>
+    public static string BuildNestedSnippetPrefix(string repositoryPrefix, string identifier)
+    {
+        return $"{repositoryPrefix.Trim('/')}/snippets/{SanitizeIdentifier(identifier)}";
+    }
+
+    // A snippet/gist id comes straight from the provider's JSON; a hostile self-hosted forge could
+    // return one containing '/' (or '..') and steer this resource's objects under a different key
+    // prefix. Strip anything outside the safe segment charset so a provider-supplied id can never
+    // inject extra key segments, matching the normalization applied to repository path segments.
+    private static string SanitizeIdentifier(string identifier)
+    {
+        var sanitized = GitRepositoryUrl.InvalidStorageSegmentCharacters.Replace(identifier.Trim(), "-").Trim('-', '.');
+        return string.IsNullOrWhiteSpace(sanitized) ? "unknown" : sanitized;
     }
 
     public static string BuildUrlRepositoryPrefix(RepositoryPathInfo repository)

@@ -15,15 +15,14 @@ namespace GitBackup.Services.Providers;
 internal static class AttachmentDownloader
 {
     public const long MaxAttachmentBytes = 100L * 1024 * 1024;
+    private const int MaxRedirects = 5;
 
     public static async Task<Stream> DownloadToMemoryAsync(
         HttpClient client,
         string downloadUrl,
         CancellationToken cancellationToken)
     {
-        EnsureSafeDownloadHost(downloadUrl);
-
-        using var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var response = await SendFollowingRedirectsAsync(client, downloadUrl, cancellationToken);
         response.EnsureSuccessStatusCode();
 
         var declaredLength = response.Content.Headers.ContentLength;
@@ -44,6 +43,61 @@ internal static class AttachmentDownloader
 
         buffer.Position = 0;
         return buffer;
+    }
+
+    /// <summary>
+    /// Issues the download GET, following redirects manually so every hop is re-checked by
+    /// <see cref="EnsureSafeDownloadHostAsync"/> (a plain <c>AllowAutoRedirect</c> would validate only
+    /// the first URL). The auth header is captured from the client and sent only while the request
+    /// stays on the original host — a redirect to any other host drops it, mirroring the framework's
+    /// own cross-host strip so the token never reaches a redirect target.
+    /// </summary>
+    private static async Task<HttpResponseMessage> SendFollowingRedirectsAsync(
+        HttpClient client,
+        string downloadUrl,
+        CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var currentUri))
+        {
+            throw new InvalidOperationException($"Attachment URL '{RedactUrl(downloadUrl)}' is not a valid absolute URL.");
+        }
+
+        // The client is built on a non-redirecting handler; capture and remove its default auth so it
+        // is applied per-request only, never automatically to a redirected host.
+        var auth = client.DefaultRequestHeaders.Authorization;
+        client.DefaultRequestHeaders.Authorization = null;
+        var originalHost = currentUri.Host;
+
+        for (var hop = 0; ; hop++)
+        {
+            await EnsureSafeDownloadHostAsync(currentUri, cancellationToken);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, currentUri);
+            if (auth is not null && string.Equals(currentUri.Host, originalHost, StringComparison.OrdinalIgnoreCase))
+            {
+                request.Headers.Authorization = auth;
+            }
+
+            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            if (!IsRedirect(response.StatusCode) || response.Headers.Location is null || hop >= MaxRedirects)
+            {
+                return response;
+            }
+
+            var location = response.Headers.Location;
+            currentUri = location.IsAbsoluteUri ? location : new Uri(currentUri, location);
+            response.Dispose();
+        }
+    }
+
+    private static bool IsRedirect(HttpStatusCode statusCode)
+    {
+        return statusCode is HttpStatusCode.MovedPermanently
+            or HttpStatusCode.Found
+            or HttpStatusCode.SeeOther
+            or HttpStatusCode.TemporaryRedirect
+            or HttpStatusCode.PermanentRedirect;
     }
 
     /// <summary>
@@ -89,23 +143,41 @@ internal static class AttachmentDownloader
     }
 
     /// <summary>
-    /// Rejects an attachment URL that is not http(s) or that targets a private, loopback, or link-local
-    /// address, so a crafted provider response cannot make the authenticated client reach an internal
-    /// endpoint (e.g. a cloud metadata service). This checks the literal host; it does not resolve DNS
-    /// or re-check redirect hops.
+    /// Rejects an attachment URL that is not http(s) or that resolves to a private, loopback, or
+    /// link-local address, so a crafted provider response (or a redirect hop) cannot make the
+    /// authenticated client reach an internal endpoint (e.g. a cloud metadata service). DNS names are
+    /// resolved and every returned address is checked, not just literal-IP hosts. A residual
+    /// DNS-rebinding TOCTOU remains (the name could resolve differently when the socket actually
+    /// connects); fully closing it would require pinning the connection to the validated address.
     /// </summary>
-    private static void EnsureSafeDownloadHost(string downloadUrl)
+    private static async Task EnsureSafeDownloadHostAsync(Uri uri, CancellationToken cancellationToken)
     {
-        if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        if (!GitRepositoryUrl.IsHttpOrHttps(uri))
         {
-            throw new InvalidOperationException($"Attachment URL '{RedactUrl(downloadUrl)}' is not an http or https URL.");
+            throw new InvalidOperationException($"Attachment URL '{RedactUrl(uri.ToString())}' is not an http or https URL.");
         }
 
-        if (IPAddress.TryParse(uri.Host, out var address) && IsPrivateOrLocal(address))
+        IPAddress[] addresses;
+        if (IPAddress.TryParse(uri.Host, out var literal))
         {
-            throw new InvalidOperationException(
-                $"Attachment URL '{RedactUrl(downloadUrl)}' targets a private, loopback, or link-local address.");
+            addresses = [literal];
+        }
+        else
+        {
+            addresses = await Dns.GetHostAddressesAsync(uri.Host, cancellationToken);
+            if (addresses.Length == 0)
+            {
+                throw new InvalidOperationException($"Attachment host '{uri.Host}' did not resolve to any address.");
+            }
+        }
+
+        foreach (var address in addresses)
+        {
+            if (IsPrivateOrLocal(address))
+            {
+                throw new InvalidOperationException(
+                    $"Attachment URL '{RedactUrl(uri.ToString())}' resolves to a private, loopback, or link-local address.");
+            }
         }
     }
 

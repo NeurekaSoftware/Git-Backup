@@ -9,8 +9,7 @@ public static class RepositoryPathParser
             throw new InvalidOperationException($"Invalid repository URL '{repositoryUrl}'.");
         }
 
-        if (!uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
-            !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        if (!GitRepositoryUrl.IsHttpOrHttps(uri))
         {
             throw new InvalidOperationException($"Unsupported repository URL scheme in '{repositoryUrl}'. Only http and https are supported.");
         }

@@ -1,3 +1,4 @@
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
@@ -181,9 +182,12 @@ public sealed class GitHubRepositoryProviderClient
         }
     }
 
-    protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
+    protected override void ApplyAuthentication(HttpClient client, CredentialConfig credential)
     {
-        return CreateClient(credential.ApiKey);
+        if (!string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", credential.ApiKey.Trim());
+        }
     }
 
     private (string BaseUrl, HttpClient Client, string RepositoryPath) CreateProjectClient(

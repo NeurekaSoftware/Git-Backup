@@ -1,6 +1,7 @@
 using GitBackup.Configuration.Models;
 using GitBackup.Configuration.Yaml;
 using GitBackup.Runtime;
+using GitBackup.Services.Paths;
 using GitBackup.Services.Scheduling;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
@@ -394,9 +395,7 @@ public sealed class SettingsLoader
 
     private static bool IsValidHttpUrl(string? value)
     {
-        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
-               && (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
-                   || uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase));
+        return GitRepositoryUrl.TryCreateHttpUrl(value, out _);
     }
 
     private static List<string> ValidateDeprecatedKeys(string yaml)

@@ -198,11 +198,12 @@ public sealed class ForgejoRepositoryProviderClient
         return DistinctByKey(first.Concat(second), attachment => attachment.OriginalPath);
     }
 
-    protected override HttpClient CreateAuthenticatedClient(CredentialConfig credential)
+    protected override void ApplyAuthentication(HttpClient client, CredentialConfig credential)
     {
-        var client = CreateClient(token: string.Empty);
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", credential.ApiKey!.Trim());
-        return client;
+        if (!string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", credential.ApiKey.Trim());
+        }
     }
 
     private static string ResolveApiBaseUrl(string? configuredBaseUrl)
