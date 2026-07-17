@@ -52,8 +52,9 @@ public sealed class RepositoryRetentionService
         var result = await ApplyRepositoryRetentionAsync(objectStorageService, cutoff, retentionMinimum, cancellationToken);
 
         AppLogger.Info(
-            "Retention run completed. deletedSnapshots={DeletedSnapshots}, emptiedRepositories={EmptiedRepositories}.",
+            "Retention run completed. deletedSnapshots={DeletedSnapshots}, deletedOrphanObjects={DeletedOrphanObjects}, emptiedRepositories={EmptiedRepositories}.",
             result.DeletedSnapshots,
+            result.DeletedOrphanObjects,
             result.EmptiedRepositories);
     }
 
@@ -66,7 +67,7 @@ public sealed class RepositoryRetentionService
     /// objects (the advisory metadata.json and any issues/, merge-requests/, and releases/ documents
     /// and attachments) are removed too so no orphaned prefix is left behind.
     /// </summary>
-    private static async Task<(int DeletedSnapshots, int EmptiedRepositories)> ApplyRepositoryRetentionAsync(
+    private static async Task<(int DeletedSnapshots, int DeletedOrphanObjects, int EmptiedRepositories)> ApplyRepositoryRetentionAsync(
         IObjectStorageService objectStorageService,
         DateTimeOffset cutoff,
         int retentionMinimum,
@@ -152,7 +153,7 @@ public sealed class RepositoryRetentionService
             await objectStorageService.DeleteObjectsAsync(keysToDelete, cancellationToken);
         }
 
-        return (expiredKeys.Count, emptiedRepositories.Count);
+        return (expiredKeys.Count, orphanKeys.Count, emptiedRepositories.Count);
     }
 
     private static bool IsReclaimableOrphan(

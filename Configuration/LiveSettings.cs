@@ -72,7 +72,7 @@ public sealed class LiveSettings : IDisposable
         _watcher.Deleted += OnSettingsFileChanged;
         _watcher.Renamed += OnSettingsFileRenamed;
 
-        AppLogger.Info("Settings file watcher started. settingsPath={SettingsPath}", _settingsPath);
+        AppLogger.Info("Settings file watcher started. settingsPath={SettingsPath}.", _settingsPath);
     }
 
     public void Dispose()
@@ -167,7 +167,7 @@ public sealed class LiveSettings : IDisposable
             AppLogger.Error("Settings reload failed. settingsPath={SettingsPath}. Existing settings will be kept.", _settingsPath);
             foreach (var error in result.Errors)
             {
-                AppLogger.Error("Settings reload validation error: {ValidationError}", error);
+                AppLogger.Error("Settings reload validation error. error={ValidationError}.", error);
             }
 
             return;
@@ -184,8 +184,8 @@ public sealed class LiveSettings : IDisposable
             _current = reloadedSettings;
         }
 
-        AppLogger.Info("Settings reloaded successfully. settingsPath={SettingsPath}", _settingsPath);
-        AppLogger.Debug("Current log level from settings: {LogLevel}", reloadedSettings.Logging.LogLevel);
+        AppLogger.Info("Settings reloaded successfully. settingsPath={SettingsPath}.", _settingsPath);
+        AppLogger.Debug("Current log level from settings. logLevel={LogLevel}.", reloadedSettings.Logging.LogLevel);
     }
 
     private void ThrowIfDisposed()

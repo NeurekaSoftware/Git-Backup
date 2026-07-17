@@ -156,12 +156,26 @@ public sealed class ProjectMetadataSyncService
 
         AppLogger.Info("{Collection} backup started. repository={Repository}.", spec.Label, backup.RepositoryDisplay);
 
-        var backedUp = await SyncCollectionAsync(spec, backup, cancellationToken);
+        var (backedUp, completed) = await SyncCollectionAsync(spec, backup, cancellationToken);
 
-        AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", spec.Label, backup.RepositoryDisplay, spec.CountLabel, backedUp);
+        if (completed)
+        {
+            AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", spec.Label, backup.RepositoryDisplay, spec.CountLabel, backedUp);
+        }
+        else
+        {
+            // The listing failed partway, so the set is incomplete: say so rather than reporting a
+            // completed backup, which would read as though everything had been captured.
+            AppLogger.Warn(
+                "{Collection} backup finished incomplete; stored items were kept and nothing was deleted. repository={Repository}, {CountName}={Count}.",
+                spec.Label,
+                backup.RepositoryDisplay,
+                spec.CountLabel,
+                backedUp);
+        }
     }
 
-    private static async Task<int> SyncCollectionAsync<T>(
+    private static async Task<(int BackedUp, bool Completed)> SyncCollectionAsync<T>(
         CollectionSpec<T> spec,
         CollectionBackupContext backup,
         CancellationToken cancellationToken)
@@ -257,7 +271,7 @@ public sealed class ProjectMetadataSyncService
 
         if (listingFailed)
         {
-            return backedUp;
+            return (backedUp, false);
         }
 
         await backup.ObjectStorageService.UploadTextAsync(
@@ -280,7 +294,7 @@ public sealed class ProjectMetadataSyncService
                 backup.RepositoryDisplay);
         }
 
-        return backedUp;
+        return (backedUp, true);
     }
 
     private static async Task DownloadAttachmentsAsync(

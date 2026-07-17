@@ -33,7 +33,7 @@ class Program
                 AppLogger.Error("Failed to load settings file {SettingsPath}.", settingsPath);
                 foreach (var error in settingsLoadResult.Errors)
                 {
-                    AppLogger.Error("Settings validation error: {ValidationError}", error);
+                    AppLogger.Error("Settings validation error. error={ValidationError}.", error);
                 }
 
                 return 1;

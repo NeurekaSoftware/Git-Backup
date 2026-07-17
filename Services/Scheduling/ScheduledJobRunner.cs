@@ -133,7 +133,7 @@ public sealed class ScheduledJobRunner : IDisposable
                 var runDurationSeconds = (DateTimeOffset.UtcNow - runStartedAt).TotalSeconds;
                 AppLogger.Error(
                     exception,
-                    "{JobName}: run failed after {DurationSeconds:0.###} seconds. {ErrorMessage}",
+                    "{JobName}: run failed after {DurationSeconds:0.###} seconds. error={ErrorMessage}.",
                     jobName,
                     runDurationSeconds,
                     exception.Message);
@@ -208,7 +208,7 @@ public sealed class ScheduledJobRunner : IDisposable
         {
             AppLogger.Error(
                 exception,
-                "Retention failed after the {TriggeredByJob} job run. {ErrorMessage}",
+                "Retention failed after the {TriggeredByJob} job run. error={ErrorMessage}.",
                 triggeredBy,
                 exception.Message);
         }
