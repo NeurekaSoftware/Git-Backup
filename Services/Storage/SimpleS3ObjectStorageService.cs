@@ -23,7 +23,6 @@ namespace GitBackup.Services.Storage;
 
 public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 {
-    private const string ArchiveContentType = "application/gzip";
     private const string JsonContentType = "application/json";
     private const int MultipartPartSizeBytes = 16 * 1024 * 1024;
     private const int MultipartParallelParts = 4;
@@ -138,6 +137,12 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         try
         {
             await using var readerStream = pipe.Reader.AsStream();
+
+            // Deliberately no Content-Type on the multipart path. The initiate request (POST ?uploads)
+            // has no body, and .NET can only attach Content-Type to a request body — so the header is
+            // dropped on the wire while SimpleS3 still lists content-type in the SigV4 SignedHeaders. A
+            // strict S3 provider (e.g. Backblaze B2) then rejects the request with "header 'content-type'
+            // is listed in signed headers, but is not present". The stored object gets the default type.
             await ExecuteAsync(
                 "upload archive object",
                 normalizedObjectKey,
@@ -147,7 +152,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
                     readerStream,
                     MultipartPartSizeBytes,
                     MultipartParallelParts,
-                    config: request => request.ContentType.Set(ArchiveContentType),
                     token: cancellationToken));
         }
         catch
@@ -256,12 +260,14 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         }
 
         AppLogger.Debug(
-            "Streaming object upload. objectKey={ObjectKey}, contentType={ContentType}.",
-            normalizedObjectKey,
-            resolvedContentType);
+            "Streaming object upload. objectKey={ObjectKey}.",
+            normalizedObjectKey);
 
         // Upload straight from the (non-seekable) source stream via multipart — the same path the
         // archive uses — so an attachment of unknown or large size is never buffered fully in memory.
+        // Content-Type is omitted for the same reason as the archive path: the bodyless multipart
+        // initiate can't carry it, and signing it breaks strict S3 providers. Smaller attachments take
+        // the single-PutObject branch above, which does record their Content-Type.
         await ExecuteAsync(
             "upload object",
             normalizedObjectKey,
@@ -271,7 +277,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
                 content,
                 MultipartPartSizeBytes,
                 MultipartParallelParts,
-                config: request => request.ContentType.Set(resolvedContentType),
                 token: cancellationToken));
     }
 
