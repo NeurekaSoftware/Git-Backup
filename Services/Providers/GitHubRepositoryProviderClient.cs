@@ -8,7 +8,7 @@ using GitBackup.Runtime;
 namespace GitBackup.Services.Providers;
 
 public sealed class GitHubRepositoryProviderClient
-    : ProviderHttpClientBase, IRepositoryProviderClient, IProjectMetadataProviderClient
+    : GiteaProviderClientBase, IRepositoryProviderClient, IProjectMetadataProviderClient
 {
     private const string DefaultApiBaseUrl = "https://api.github.com";
     private const int PageSize = 100;

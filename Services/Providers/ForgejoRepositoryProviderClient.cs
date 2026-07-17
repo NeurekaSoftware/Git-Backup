@@ -7,7 +7,7 @@ using GitBackup.Runtime;
 namespace GitBackup.Services.Providers;
 
 public sealed class ForgejoRepositoryProviderClient
-    : ProviderHttpClientBase, IRepositoryProviderClient, IProjectMetadataProviderClient
+    : GiteaProviderClientBase, IRepositoryProviderClient, IProjectMetadataProviderClient
 {
     private const string DefaultBaseUrl = "https://codeberg.org";
     private const int PageSize = 50;
