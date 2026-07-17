@@ -13,6 +13,11 @@ public sealed class GitHubRepositoryProviderClient
     private const string DefaultApiBaseUrl = "https://api.github.com";
     private const int PageSize = 100;
 
+    // One repo-wide comments walk per repository, shared by the issue and pull-request passes: GitHub
+    // returns both kinds of comment from the same endpoint. Keyed on the per-repository context instance
+    // so the grouped comments are released as soon as that repository's metadata sync finishes.
+    private static readonly ConditionalWeakTable<ProjectMetadataContext, Task<Dictionary<long, List<BackedUpComment>>>> CommentsByContext = new();
+
     // GitHub stores issue/PR attachments as absolute URLs on its attachment hosts, embedded in the
     // markdown body. Match those and download them directly.
     private static readonly Regex AttachmentReference = new(
@@ -107,7 +112,7 @@ public sealed class GitHubRepositoryProviderClient
             // One repo-wide comments fetch (O(total/100) requests) instead of one paginated fetch per
             // issue: GitHub's issue-comments endpoint returns every issue and PR comment, each carrying
             // the issue_url it belongs to, so they can be grouped by number in memory.
-            var commentsByNumber = await FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken);
+            var commentsByNumber = await GetIssueCommentsByNumberAsync(context, client, baseUrl, repositoryPath, cancellationToken);
 
             var issues = CollectStreamAsync(
                 client,
@@ -139,9 +144,9 @@ public sealed class GitHubRepositoryProviderClient
         using (client)
         {
             // Pull requests are issues on GitHub, so their discussion comments live on the same
-            // repo-wide issue-comments endpoint; fetch it once and group by number rather than paging
-            // per pull request.
-            var commentsByNumber = await FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken);
+            // repo-wide issue-comments endpoint that the issue pass already walked; reuse that result
+            // rather than paging it a second time.
+            var commentsByNumber = await GetIssueCommentsByNumberAsync(context, client, baseUrl, repositoryPath, cancellationToken);
 
             var pulls = CollectStreamAsync(
                 client,
@@ -235,6 +240,15 @@ public sealed class GitHubRepositoryProviderClient
         {
             var url = match.Value;
 
+            // The trailing group permits '/' and '.', so untrusted body text can embed dot-segments that
+            // Uri normalization resolves into a different path on the same allowlisted host before the
+            // request goes out with the token attached. Match on whole segments so a name like
+            // "chart..v2.png" is still accepted.
+            if (url.Split('?', 2)[0].Split('/').Contains(".."))
+            {
+                return null;
+            }
+
             // Persist and key off the query-free URL so the short-lived ?jwt= signing token is never
             // stored (and the key stays stable across runs); the full URL is kept only for download.
             var reference = AttachmentDownloader.RedactUrl(url);
@@ -254,9 +268,32 @@ public sealed class GitHubRepositoryProviderClient
         return lastSlash >= 0 ? withoutQuery[(lastSlash + 1)..] : withoutQuery;
     }
 
+    /// <summary>
+    /// Returns the repository's comments grouped by issue/PR number, walking the endpoint at most once
+    /// per repository. The issue and pull-request passes both need the same repo-wide data and run one
+    /// after the other, so the result is cached against the per-repository context: the walk happens on
+    /// whichever pass runs first, and the entry becomes collectable once that context goes out of scope.
+    /// </summary>
+    private static Task<Dictionary<long, List<BackedUpComment>>> GetIssueCommentsByNumberAsync(
+        ProjectMetadataContext context,
+        HttpClient client,
+        string baseUrl,
+        string repositoryPath,
+        CancellationToken cancellationToken)
+    {
+        return CommentsByContext.GetValue(
+            context,
+            _ => FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken));
+    }
+
     // Fetches every issue and PR comment for the repo in one paginated walk and groups them by the
     // issue/PR number parsed from each comment's issue_url. Requested oldest-first so each thread stays
     // in chronological order.
+    //
+    // GitHub has no per-page comment endpoint, so this materializes the repository's whole comment
+    // corpus up front: peak memory here scales with the total comment count rather than with one page.
+    // That is the deliberate trade for removing the per-item N+1 (one request per issue/PR), and it is
+    // released once the repository's context goes out of scope.
     private static async Task<Dictionary<long, List<BackedUpComment>>> FetchIssueCommentsByNumberAsync(
         HttpClient client,
         string baseUrl,
@@ -266,7 +303,7 @@ public sealed class GitHubRepositoryProviderClient
         var commentsByNumber = new Dictionary<long, List<BackedUpComment>>();
 
         // CollectAsync walks pages sequentially, so the dictionary is only ever mutated on one thread.
-        await CollectAsync(
+        await CollectAsync<BackedUpComment>(
             client,
             page => $"{baseUrl}/repos/{repositoryPath}/issues/comments?sort=created&direction=asc&per_page={PageSize}&page={page}",
             item =>
@@ -284,7 +321,10 @@ public sealed class GitHubRepositoryProviderClient
                     thread.Add(comment);
                 }
 
-                return comment;
+                // The grouped dictionary is the only result, so skip collection: returning the comment
+                // would accumulate a second list of every comment in the repository and discard it.
+                // Paging keys off the raw element count, so skipping every item is safe.
+                return null;
             },
             PageIsFull(PageSize),
             cancellationToken);
