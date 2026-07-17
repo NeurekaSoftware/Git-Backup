@@ -21,6 +21,11 @@ public sealed class ProjectMetadataContext
 
     // Max issues/merge requests to fetch and upload in parallel for this project. 1 = sequential.
     public int Concurrency { get; init; } = 1;
+
+    // Shared across the whole run to cap how many attachments are downloaded (and buffered fully in
+    // memory) at once, so nested repository x metadata parallelism cannot multiply peak memory. Null
+    // disables throttling.
+    public SemaphoreSlim? DownloadThrottle { get; init; }
 }
 
 /// <summary>

@@ -127,7 +127,7 @@ public sealed class LiveSettings : IDisposable
             return;
         }
 
-        CancellationTokenSource debounceTokenSource;
+        CancellationToken debounceToken;
 
         lock (_sync)
         {
@@ -135,10 +135,12 @@ public sealed class LiveSettings : IDisposable
             _reloadDebounceTokenSource?.Dispose();
 
             _reloadDebounceTokenSource = new CancellationTokenSource();
-            debounceTokenSource = _reloadDebounceTokenSource;
+            // Capture the token value while still holding the lock: a superseding reload may dispose
+            // this source before the task below starts, and reading .Token on a disposed source throws.
+            debounceToken = _reloadDebounceTokenSource.Token;
         }
 
-        _ = Task.Run(() => ReloadAfterDebounceAsync(debounceTokenSource.Token));
+        _ = Task.Run(() => ReloadAfterDebounceAsync(debounceToken));
         AppLogger.Debug("Settings reload scheduled after debounce.");
     }
 

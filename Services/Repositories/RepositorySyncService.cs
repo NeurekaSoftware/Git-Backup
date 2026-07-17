@@ -52,6 +52,10 @@ public sealed class RepositorySyncService
         var repositoryConcurrency = Math.Max(1, settings.Concurrency.Repositories ?? 1);
         var metadataConcurrency = Math.Max(1, settings.Concurrency.Metadata ?? 1);
 
+        // Shared across every repository this run, so the peak number of attachments buffered in
+        // memory is capped at metadataConcurrency rather than repositoryConcurrency x metadataConcurrency.
+        using var metadataDownloadThrottle = new SemaphoreSlim(metadataConcurrency);
+
         foreach (var repository in enabledRepositories)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -67,7 +71,7 @@ public sealed class RepositorySyncService
             {
                 if (string.Equals(repository.Mode, RepositoryJobModes.Provider, StringComparison.OrdinalIgnoreCase))
                 {
-                    var (synced, complete) = await RunProviderModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, metadataConcurrency, cancellationToken);
+                    var (synced, complete) = await RunProviderModeAsync(settings, repository, objectStorageService, expectedMirrorDirectories, repositoryConcurrency, metadataConcurrency, metadataDownloadThrottle, cancellationToken);
                     syncedRepositories += synced;
                     pictureComplete &= complete;
                 }
@@ -117,6 +121,7 @@ public sealed class RepositorySyncService
         HashSet<string> expectedMirrorDirectories,
         int repositoryConcurrency,
         int metadataConcurrency,
+        SemaphoreSlim metadataDownloadThrottle,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(repository.Provider) || string.IsNullOrWhiteSpace(repository.Credential))
@@ -207,6 +212,7 @@ public sealed class RepositorySyncService
                             credentialConfig,
                             objectStorageService,
                             metadataConcurrency,
+                            metadataDownloadThrottle,
                             token);
                     }
                 }

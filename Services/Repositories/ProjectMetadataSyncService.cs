@@ -29,6 +29,7 @@ public sealed class ProjectMetadataSyncService
         CredentialConfig credential,
         IObjectStorageService objectStorageService,
         int concurrency,
+        SemaphoreSlim downloadThrottle,
         CancellationToken cancellationToken)
     {
         var metadataClient = _providerFactory.TryResolveMetadata(repository.Provider!);
@@ -45,7 +46,8 @@ public sealed class ProjectMetadataSyncService
             WebUrl = discoveredRepository.WebUrl,
             ProviderProjectId = discoveredRepository.ProviderProjectId,
             BaseUrl = repository.BaseUrl,
-            Concurrency = Math.Max(1, concurrency)
+            Concurrency = Math.Max(1, concurrency),
+            DownloadThrottle = downloadThrottle
         };
 
         if (repository.IncludeIssues == true)
@@ -249,6 +251,14 @@ public sealed class ProjectMetadataSyncService
                 continue;
             }
 
+            // Bound how many attachments are downloaded (and buffered fully in memory) at once across
+            // the whole run. A cancellation while waiting propagates before the try, so no release runs.
+            var throttle = context.DownloadThrottle;
+            if (throttle is not null)
+            {
+                await throttle.WaitAsync(cancellationToken);
+            }
+
             try
             {
                 await using var stream = await metadataClient.OpenAttachmentAsync(context, credential, attachment.DownloadUrl, cancellationToken);
@@ -270,6 +280,10 @@ public sealed class ProjectMetadataSyncService
                 // Keep the reference (with no StorageKey) so the document still records that the file
                 // existed; one bad attachment must not fail the whole item.
                 AppLogger.Error(exception, "Attachment backup failed. originalPath={OriginalPath}, error={ErrorMessage}.", AttachmentDownloader.RedactUrl(attachment.OriginalPath), exception.Message);
+            }
+            finally
+            {
+                throttle?.Release();
             }
         }
     }

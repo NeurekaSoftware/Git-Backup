@@ -123,10 +123,21 @@ public sealed class RepositoryRetentionService
         // issues/ and merge-requests/ subtrees (documents and attachments). Project snippets nest
         // under {prefix}/snippets/{id} and are independent repositories with their own snapshots and
         // retention, so they are intentionally left untouched here.
+        //
+        // Precompute the deep collection prefixes for each emptied repository once, rather than
+        // rebuilding three interpolated strings per object key scanned.
+        var reclaimableCollectionPrefixes = new List<string>(emptiedRepositories.Count * 3);
+        foreach (var repositoryPrefix in emptiedRepositories)
+        {
+            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.IssuesCollectionSegment}/");
+            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}/");
+            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.ReleasesCollectionSegment}/");
+        }
+
         var orphanKeys = allKeys
             .Where(objectKey =>
                 !StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out _) &&
-                IsReclaimableOrphan(objectKey, emptiedRepositories))
+                IsReclaimableOrphan(objectKey, emptiedRepositories, reclaimableCollectionPrefixes))
             .ToList();
 
         var keysToDelete = expiredKeys.Concat(orphanKeys).ToList();
@@ -138,7 +149,10 @@ public sealed class RepositoryRetentionService
         return (expiredKeys.Count, emptiedRepositories.Count);
     }
 
-    private static bool IsReclaimableOrphan(string objectKey, HashSet<string> emptiedRepositories)
+    private static bool IsReclaimableOrphan(
+        string objectKey,
+        HashSet<string> emptiedRepositories,
+        List<string> reclaimableCollectionPrefixes)
     {
         // The advisory metadata.json is a direct child of the repository prefix.
         if (emptiedRepositories.Contains(StorageKeyBuilder.GetParentPrefix(objectKey)))
@@ -147,11 +161,9 @@ public sealed class RepositoryRetentionService
         }
 
         // Issue/merge-request/release documents and their attachments nest deeper under the prefix.
-        foreach (var repositoryPrefix in emptiedRepositories)
+        foreach (var prefix in reclaimableCollectionPrefixes)
         {
-            if (objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.IssuesCollectionSegment}/", StringComparison.Ordinal) ||
-                objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}/", StringComparison.Ordinal) ||
-                objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.ReleasesCollectionSegment}/", StringComparison.Ordinal))
+            if (objectKey.StartsWith(prefix, StringComparison.Ordinal))
             {
                 return true;
             }
