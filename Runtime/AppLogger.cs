@@ -1,5 +1,6 @@
 using System.Text;
 using Serilog;
+using Serilog.Core;
 using Serilog.Events;
 
 namespace GitBackup.Runtime;
@@ -110,7 +111,7 @@ public static class AppLogger
     {
         var configuredLogger = new LoggerConfiguration()
             .MinimumLevel.Is(ToSerilogLevel(minimumLevel))
-            .Enrich.WithProperty("TimeZone", GetTimeZoneAbbreviation(DateTimeOffset.Now))
+            .Enrich.With(new TimeZoneEnricher())
             .WriteTo.Console(
                 outputTemplate:
                 "[{Timestamp:yyyy-MM-dd HH:mm:ss} ({TimeZone})] [{Level:u3}] {Message:lj}{NewLine}{Exception}")
@@ -150,6 +151,18 @@ public static class AppLogger
         }
 
         return LocalTimeZone.Id;
+    }
+
+    // Computes the timezone abbreviation from each event's own timestamp, so a long-running process
+    // that crosses a DST boundary labels lines with the zone in effect at the time — rather than the
+    // one captured once when the logger was configured.
+    private sealed class TimeZoneEnricher : ILogEventEnricher
+    {
+        public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
+        {
+            var abbreviation = GetTimeZoneAbbreviation(logEvent.Timestamp);
+            logEvent.AddOrUpdateProperty(propertyFactory.CreateProperty("TimeZone", abbreviation));
+        }
     }
 
     private static LogEventLevel ToSerilogLevel(AppLogLevel level)
