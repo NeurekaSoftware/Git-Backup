@@ -9,7 +9,7 @@ namespace GitBackup.Services.Repositories;
 /// a single flat directory named by a deterministic hash of its storage prefix, so cleaning up
 /// mirrors for repositories that are no longer backed up is a simple set difference.
 /// </summary>
-internal sealed class LocalMirrorStore
+public sealed class LocalMirrorStore
 {
     private readonly string _mirrorsRoot;
 

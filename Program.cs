@@ -63,7 +63,9 @@ class Program
                 new ForgejoRepositoryProviderClient()
             ]);
 
-            var repositorySyncService = new RepositorySyncService(providerFactory, gitRepositoryService, objectStorageFactory, workingRoot);
+            var mirrorStore = new LocalMirrorStore(workingRoot);
+            var projectMetadataSyncService = new ProjectMetadataSyncService(providerFactory);
+            var repositorySyncService = new RepositorySyncService(providerFactory, gitRepositoryService, objectStorageFactory, mirrorStore, projectMetadataSyncService);
             var retentionService = new RepositoryRetentionService(objectStorageFactory);
             var scheduledJobRunner = new ScheduledJobRunner(() => liveSettings.Current, repositorySyncService, retentionService);
 

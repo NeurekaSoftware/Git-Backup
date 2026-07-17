@@ -20,13 +20,14 @@ public sealed class RepositorySyncService
         RepositoryProviderClientFactory providerFactory,
         IGitRepositoryService gitRepositoryService,
         Func<StorageConfig, IObjectStorageService> objectStorageServiceFactory,
-        string workingRoot)
+        LocalMirrorStore mirrorStore,
+        ProjectMetadataSyncService projectMetadataSyncService)
     {
         _providerFactory = providerFactory;
         _gitRepositoryService = gitRepositoryService;
         _objectStorageServiceFactory = objectStorageServiceFactory;
-        _mirrorStore = new LocalMirrorStore(workingRoot);
-        _projectMetadataSyncService = new ProjectMetadataSyncService(providerFactory);
+        _mirrorStore = mirrorStore;
+        _projectMetadataSyncService = projectMetadataSyncService;
     }
 
     public async Task RunAsync(Settings settings, CancellationToken cancellationToken)

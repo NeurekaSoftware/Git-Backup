@@ -22,6 +22,31 @@ public sealed class ProjectMetadataSyncService
         _providerFactory = providerFactory;
     }
 
+    /// <summary>The per-collection descriptors (labels, keys, and the map/serialize delegates).</summary>
+    private sealed record CollectionSpec<T>(
+        string Label,
+        string SupportLabel,
+        string CountLabel,
+        bool Supported,
+        Func<Task<IReadOnlyList<T>>> ListAsync,
+        string CollectionPrefix,
+        string ManifestObjectKey,
+        Func<T, string> GetSlug,
+        Func<string, string> BuildObjectKey,
+        Func<string, string, string> BuildAttachmentObjectKey,
+        Func<IReadOnlyList<T>, string> SerializeManifest,
+        bool IncludeArtifacts)
+        where T : class, IBackedUpArtifactItem;
+
+    /// <summary>The ambient dependencies shared by all three collections of one repository's run.</summary>
+    private sealed record CollectionBackupContext(
+        RepositoryJobConfig Repository,
+        ProjectMetadataContext Context,
+        IProjectMetadataProviderClient MetadataClient,
+        CredentialConfig Credential,
+        string RepositoryDisplay,
+        IObjectStorageService ObjectStorageService);
+
     public async Task SyncAsync(
         RepositoryJobConfig repository,
         DiscoveredRepository discoveredRepository,
@@ -50,107 +75,97 @@ public sealed class ProjectMetadataSyncService
             DownloadThrottle = downloadThrottle
         };
 
+        var backup = new CollectionBackupContext(repository, context, metadataClient, credential, repositoryDisplay, objectStorageService);
+
         if (repository.IncludeIssues == true)
         {
             await BackUpCollectionAsync(
-                label: "Issue",
-                supportLabel: "issues",
-                countLabel: "issues",
-                supported: metadataClient.SupportsIssues,
-                listAsync: () => metadataClient.ListIssuesAsync(context, credential, cancellationToken),
-                collectionPrefix: StorageKeyBuilder.BuildIssuesCollectionPrefix(repositoryPrefix),
-                manifestObjectKey: StorageKeyBuilder.BuildIssuesManifestObjectKey(repositoryPrefix),
-                getSlug: issue => issue.Number.ToString(),
-                buildObjectKey: slug => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, slug),
-                buildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, slug, fileName),
-                serializeManifest: items => StorageMetadataDocuments.Serialize(items
-                    .Select(issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt })
-                    .ToList()),
-                includeArtifacts: repository.IncludeIssueArtifacts == true,
-                repository, context, metadataClient, credential, repositoryDisplay, objectStorageService, cancellationToken);
+                new CollectionSpec<BackedUpIssue>(
+                    Label: "Issue",
+                    SupportLabel: "issues",
+                    CountLabel: "issues",
+                    Supported: metadataClient.SupportsIssues,
+                    ListAsync: () => metadataClient.ListIssuesAsync(context, credential, cancellationToken),
+                    CollectionPrefix: StorageKeyBuilder.BuildIssuesCollectionPrefix(repositoryPrefix),
+                    ManifestObjectKey: StorageKeyBuilder.BuildIssuesManifestObjectKey(repositoryPrefix),
+                    GetSlug: issue => issue.Number.ToString(),
+                    BuildObjectKey: slug => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, slug),
+                    BuildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, slug, fileName),
+                    SerializeManifest: items => StorageMetadataDocuments.Serialize(items
+                        .Select(issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt })
+                        .ToList()),
+                    IncludeArtifacts: repository.IncludeIssueArtifacts == true),
+                backup,
+                cancellationToken);
         }
 
         if (repository.IncludeMergeRequests == true)
         {
             await BackUpCollectionAsync(
-                label: "Merge request",
-                supportLabel: "merge requests",
-                countLabel: "mergeRequests",
-                supported: metadataClient.SupportsMergeRequests,
-                listAsync: () => metadataClient.ListMergeRequestsAsync(context, credential, cancellationToken),
-                collectionPrefix: StorageKeyBuilder.BuildMergeRequestsCollectionPrefix(repositoryPrefix),
-                manifestObjectKey: StorageKeyBuilder.BuildMergeRequestsManifestObjectKey(repositoryPrefix),
-                getSlug: mergeRequest => mergeRequest.Number.ToString(),
-                buildObjectKey: slug => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, slug),
-                buildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, slug, fileName),
-                serializeManifest: items => StorageMetadataDocuments.Serialize(items
-                    .Select(mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt })
-                    .ToList()),
-                includeArtifacts: repository.IncludeMergeRequestsArtifacts == true,
-                repository, context, metadataClient, credential, repositoryDisplay, objectStorageService, cancellationToken);
+                new CollectionSpec<BackedUpMergeRequest>(
+                    Label: "Merge request",
+                    SupportLabel: "merge requests",
+                    CountLabel: "mergeRequests",
+                    Supported: metadataClient.SupportsMergeRequests,
+                    ListAsync: () => metadataClient.ListMergeRequestsAsync(context, credential, cancellationToken),
+                    CollectionPrefix: StorageKeyBuilder.BuildMergeRequestsCollectionPrefix(repositoryPrefix),
+                    ManifestObjectKey: StorageKeyBuilder.BuildMergeRequestsManifestObjectKey(repositoryPrefix),
+                    GetSlug: mergeRequest => mergeRequest.Number.ToString(),
+                    BuildObjectKey: slug => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, slug),
+                    BuildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, slug, fileName),
+                    SerializeManifest: items => StorageMetadataDocuments.Serialize(items
+                        .Select(mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt })
+                        .ToList()),
+                    IncludeArtifacts: repository.IncludeMergeRequestsArtifacts == true),
+                backup,
+                cancellationToken);
         }
 
         if (repository.IncludeReleases == true)
         {
             await BackUpCollectionAsync(
-                label: "Release",
-                supportLabel: "releases",
-                countLabel: "releases",
-                supported: metadataClient.SupportsReleases,
-                listAsync: () => metadataClient.ListReleasesAsync(context, credential, cancellationToken),
-                collectionPrefix: StorageKeyBuilder.BuildReleasesCollectionPrefix(repositoryPrefix),
-                manifestObjectKey: StorageKeyBuilder.BuildReleasesManifestObjectKey(repositoryPrefix),
-                getSlug: release => ResolveReleaseSlug(release.Tag),
-                buildObjectKey: slug => StorageKeyBuilder.BuildReleaseObjectKey(repositoryPrefix, slug),
-                buildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildReleaseAttachmentObjectKey(repositoryPrefix, slug, fileName),
-                serializeManifest: items => StorageMetadataDocuments.Serialize(items
-                    .Select(release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt })
-                    .ToList()),
-                includeArtifacts: repository.IncludeReleaseArtifacts == true,
-                repository, context, metadataClient, credential, repositoryDisplay, objectStorageService, cancellationToken);
+                new CollectionSpec<BackedUpRelease>(
+                    Label: "Release",
+                    SupportLabel: "releases",
+                    CountLabel: "releases",
+                    Supported: metadataClient.SupportsReleases,
+                    ListAsync: () => metadataClient.ListReleasesAsync(context, credential, cancellationToken),
+                    CollectionPrefix: StorageKeyBuilder.BuildReleasesCollectionPrefix(repositoryPrefix),
+                    ManifestObjectKey: StorageKeyBuilder.BuildReleasesManifestObjectKey(repositoryPrefix),
+                    GetSlug: release => ResolveReleaseSlug(release.Tag),
+                    BuildObjectKey: slug => StorageKeyBuilder.BuildReleaseObjectKey(repositoryPrefix, slug),
+                    BuildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildReleaseAttachmentObjectKey(repositoryPrefix, slug, fileName),
+                    SerializeManifest: items => StorageMetadataDocuments.Serialize(items
+                        .Select(release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt })
+                        .ToList()),
+                    IncludeArtifacts: repository.IncludeReleaseArtifacts == true),
+                backup,
+                cancellationToken);
         }
     }
 
     /// <summary>
     /// Backs up one metadata collection (issues, merge requests, or releases). A failed list call is
-    /// logged and skipped so a partial fetch never drives a reconciliation delete. <paramref
-    /// name="label"/> names the collection in log lines; <paramref name="supportLabel"/> and <paramref
-    /// name="countLabel"/> keep the "not supported" and "completed" messages reading naturally.
+    /// logged and skipped so a partial fetch never drives a reconciliation delete.
     /// </summary>
     private async Task BackUpCollectionAsync<T>(
-        string label,
-        string supportLabel,
-        string countLabel,
-        bool supported,
-        Func<Task<IReadOnlyList<T>>> listAsync,
-        string collectionPrefix,
-        string manifestObjectKey,
-        Func<T, string> getSlug,
-        Func<string, string> buildObjectKey,
-        Func<string, string, string> buildAttachmentObjectKey,
-        Func<IReadOnlyList<T>, string> serializeManifest,
-        bool includeArtifacts,
-        RepositoryJobConfig repository,
-        ProjectMetadataContext context,
-        IProjectMetadataProviderClient metadataClient,
-        CredentialConfig credential,
-        string repositoryDisplay,
-        IObjectStorageService objectStorageService,
+        CollectionSpec<T> spec,
+        CollectionBackupContext backup,
         CancellationToken cancellationToken)
         where T : class, IBackedUpArtifactItem
     {
-        if (!supported)
+        if (!spec.Supported)
         {
-            AppLogger.Debug("Provider does not support {Collection}. provider={Provider}.", supportLabel, repository.Provider);
+            AppLogger.Debug("Provider does not support {Collection}. provider={Provider}.", spec.SupportLabel, backup.Repository.Provider);
             return;
         }
 
-        AppLogger.Info("{Collection} backup started. repository={Repository}.", label, repositoryDisplay);
+        AppLogger.Info("{Collection} backup started. repository={Repository}.", spec.Label, backup.RepositoryDisplay);
 
         IReadOnlyList<T> items;
         try
         {
-            items = await listAsync();
+            items = await spec.ListAsync();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -159,59 +174,37 @@ public sealed class ProjectMetadataSyncService
         catch (Exception exception)
         {
             // A partial fetch must never drive reconciliation deletes, so skip the whole collection.
-            AppLogger.Error(exception, "{Collection} backup failed. repository={Repository}, error={ErrorMessage}.", label, repositoryDisplay, exception.Message);
+            AppLogger.Error(exception, "{Collection} backup failed. repository={Repository}, error={ErrorMessage}.", spec.Label, backup.RepositoryDisplay, exception.Message);
             return;
         }
 
-        await SyncCollectionAsync(
-            items,
-            collectionPrefix,
-            manifestObjectKey,
-            getSlug,
-            buildObjectKey,
-            buildAttachmentObjectKey,
-            serializeManifest,
-            includeArtifacts,
-            context,
-            metadataClient,
-            credential,
-            objectStorageService,
-            cancellationToken);
+        await SyncCollectionAsync(items, spec, backup, cancellationToken);
 
-        AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", label, repositoryDisplay, countLabel, items.Count);
+        AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", spec.Label, backup.RepositoryDisplay, spec.CountLabel, items.Count);
     }
 
     private static async Task SyncCollectionAsync<T>(
         IReadOnlyList<T> items,
-        string collectionPrefix,
-        string manifestObjectKey,
-        Func<T, string> getSlug,
-        Func<string, string> buildObjectKey,
-        Func<string, string, string> buildAttachmentObjectKey,
-        Func<IReadOnlyList<T>, string> serializeManifest,
-        bool includeArtifacts,
-        ProjectMetadataContext context,
-        IProjectMetadataProviderClient metadataClient,
-        CredentialConfig credential,
-        IObjectStorageService objectStorageService,
+        CollectionSpec<T> spec,
+        CollectionBackupContext backup,
         CancellationToken cancellationToken)
         where T : class, IBackedUpArtifactItem
     {
-        var downloadArtifacts = includeArtifacts && metadataClient.SupportsArtifacts;
+        var downloadArtifacts = spec.IncludeArtifacts && backup.MetadataClient.SupportsArtifacts;
 
         // Per-item work (attachment download + document upload) is independent, so it can overlap up
         // to the configured degree. The manifest and reconciliation below run only after every item
         // has been stored, preserving the "reconcile a complete set" guarantee.
         await Parallel.ForEachAsync(
             items,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, context.Concurrency), CancellationToken = cancellationToken },
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, backup.Context.Concurrency), CancellationToken = cancellationToken },
             async (item, token) =>
             {
-                var slug = getSlug(item);
+                var slug = spec.GetSlug(item);
 
                 if (downloadArtifacts)
                 {
-                    await DownloadAttachmentsAsync(item, slug, buildAttachmentObjectKey, context, metadataClient, credential, objectStorageService, token);
+                    await DownloadAttachmentsAsync(item, slug, spec.BuildAttachmentObjectKey, backup, token);
                 }
                 else
                 {
@@ -219,25 +212,22 @@ public sealed class ProjectMetadataSyncService
                     item.Attachments = [];
                 }
 
-                await objectStorageService.UploadTextAsync(
-                    buildObjectKey(slug),
+                await backup.ObjectStorageService.UploadTextAsync(
+                    spec.BuildObjectKey(slug),
                     StorageMetadataDocuments.Serialize(item),
                     token);
             });
 
-        await objectStorageService.UploadTextAsync(manifestObjectKey, serializeManifest(items), cancellationToken);
+        await backup.ObjectStorageService.UploadTextAsync(spec.ManifestObjectKey, spec.SerializeManifest(items), cancellationToken);
 
-        await ReconcileAsync(items, getSlug, collectionPrefix, manifestObjectKey, objectStorageService, cancellationToken);
+        await ReconcileAsync(items, spec.GetSlug, spec.CollectionPrefix, spec.ManifestObjectKey, backup.ObjectStorageService, cancellationToken);
     }
 
     private static async Task DownloadAttachmentsAsync(
         IBackedUpArtifactItem item,
         string slug,
         Func<string, string, string> buildAttachmentObjectKey,
-        ProjectMetadataContext context,
-        IProjectMetadataProviderClient metadataClient,
-        CredentialConfig credential,
-        IObjectStorageService objectStorageService,
+        CollectionBackupContext backup,
         CancellationToken cancellationToken)
     {
         foreach (var attachment in item.Attachments)
@@ -253,7 +243,7 @@ public sealed class ProjectMetadataSyncService
 
             // Bound how many attachments are downloaded (and buffered fully in memory) at once across
             // the whole run. A cancellation while waiting propagates before the try, so no release runs.
-            var throttle = context.DownloadThrottle;
+            var throttle = backup.Context.DownloadThrottle;
             if (throttle is not null)
             {
                 await throttle.WaitAsync(cancellationToken);
@@ -261,11 +251,11 @@ public sealed class ProjectMetadataSyncService
 
             try
             {
-                await using var stream = await metadataClient.OpenAttachmentAsync(context, credential, attachment.DownloadUrl, cancellationToken);
+                await using var stream = await backup.MetadataClient.OpenAttachmentAsync(backup.Context, backup.Credential, attachment.DownloadUrl, cancellationToken);
                 var objectKey = buildAttachmentObjectKey(slug, attachment.FileName);
                 var contentType = MimeTypeResolver.ResolveFromFileName(attachment.FileName);
 
-                await objectStorageService.UploadStreamAsync(objectKey, stream, contentType, cancellationToken);
+                await backup.ObjectStorageService.UploadStreamAsync(objectKey, stream, contentType, cancellationToken);
 
                 attachment.StorageKey = objectKey;
                 attachment.ContentType = contentType;
