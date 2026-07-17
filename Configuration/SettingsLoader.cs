@@ -12,21 +12,16 @@ namespace GitBackup.Configuration;
 
 public sealed class SettingsLoader
 {
-    private static readonly HashSet<string> SupportedRepositoryProviders = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "github",
-        "gitlab",
-        "forgejo"
-    };
-
     private readonly IDeserializer _deserializer;
 
     public SettingsLoader()
     {
+        // Unrecognized keys are rejected rather than dropped, for the same reason ValidateRawEnums
+        // rejects unrecognized values: a typo like `includeIsues: true` would otherwise be accepted in
+        // silence and simply never back that data up.
         _deserializer = new DeserializerBuilder()
             .WithNamingConvention(CamelCaseNamingConvention.Instance)
             .WithTypeConverter(new ScalarOrSequenceConverter())
-            .IgnoreUnmatchedProperties()
             .Build();
     }
 
@@ -42,12 +37,29 @@ public sealed class SettingsLoader
             return SettingsLoadResult.Failure([$"settings file not found: '{path}'"]);
         }
 
-        Settings settings;
         string yaml;
 
         try
         {
             yaml = File.ReadAllText(path);
+        }
+        catch (Exception exception)
+        {
+            return SettingsLoadResult.Failure([$"failed to load settings '{path}': {exception.Message}"]);
+        }
+
+        // Checked against the raw document before deserialization: a settings file still using a
+        // deprecated key gets the migration message rather than an unrecognized-key error.
+        var deprecatedKeyErrors = ValidateDeprecatedKeys(yaml);
+        if (deprecatedKeyErrors.Count > 0)
+        {
+            return SettingsLoadResult.Failure(deprecatedKeyErrors);
+        }
+
+        Settings settings;
+
+        try
+        {
             settings = _deserializer.Deserialize<Settings>(yaml) ?? new Settings();
         }
         catch (YamlException exception)
@@ -57,12 +69,6 @@ public sealed class SettingsLoader
         catch (Exception exception)
         {
             return SettingsLoadResult.Failure([$"failed to load settings '{path}': {exception.Message}"]);
-        }
-
-        var deprecatedKeyErrors = ValidateDeprecatedKeys(yaml);
-        if (deprecatedKeyErrors.Count > 0)
-        {
-            return SettingsLoadResult.Failure(deprecatedKeyErrors);
         }
 
         // Reject a present-but-unrecognized enum value before Normalize coerces it to a default —
@@ -152,7 +158,7 @@ public sealed class SettingsLoader
         var payloadSignatureMode = settings.Storage?.PayloadSignatureMode;
         if (!string.IsNullOrWhiteSpace(payloadSignatureMode) && !PayloadSignatureModes.Supported.Contains(payloadSignatureMode))
         {
-            errors.Add($"storage.payloadSignatureMode '{payloadSignatureMode}' is invalid. Supported values: full, streaming, unsigned.");
+            errors.Add($"storage.payloadSignatureMode '{payloadSignatureMode}' is invalid. Supported values: {string.Join(", ", PayloadSignatureModes.Supported)}.");
         }
 
         return errors;
@@ -237,7 +243,7 @@ public sealed class SettingsLoader
                 continue;
             }
 
-            errors.Add($"repositories[{i}].mode '{repository.Mode}' is not supported. Supported values: provider, url.");
+            errors.Add($"repositories[{i}].mode '{repository.Mode}' is not supported. Supported values: {string.Join(", ", RepositoryJobModes.Supported)}.");
         }
     }
 
@@ -251,9 +257,9 @@ public sealed class SettingsLoader
         {
             errors.Add($"repositories[{index}].provider is required when mode is provider.");
         }
-        else if (!SupportedRepositoryProviders.Contains(repository.Provider))
+        else if (!RepositoryProviders.Supported.Contains(repository.Provider))
         {
-            errors.Add($"repositories[{index}].provider '{repository.Provider}' is not supported. Supported values: github, gitlab, forgejo.");
+            errors.Add($"repositories[{index}].provider '{repository.Provider}' is not supported. Supported values: {string.Join(", ", RepositoryProviders.Supported)}.");
         }
 
         if (string.IsNullOrWhiteSpace(repository.Credential))
