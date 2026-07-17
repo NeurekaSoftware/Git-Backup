@@ -27,11 +27,6 @@ public static class AppLogger
         ReconfigureLogger(_minimumLevel);
     }
 
-    public static void Initialize(AppLogLevel minimumLevel = AppLogLevel.Info)
-    {
-        SetMinimumLevel(minimumLevel);
-    }
-
     public static bool TryParseLogLevel(string? value, out AppLogLevel level)
     {
         switch (value?.Trim().ToLowerInvariant())
@@ -71,14 +66,6 @@ public static class AppLogger
         {
             _minimumLevel = level;
             ReconfigureLogger(_minimumLevel);
-        }
-    }
-
-    public static AppLogLevel GetMinimumLevel()
-    {
-        lock (Sync)
-        {
-            return _minimumLevel;
         }
     }
 

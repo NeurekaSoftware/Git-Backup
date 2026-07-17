@@ -16,8 +16,6 @@ class Program
 
     static async Task<int> Main(string[] args)
     {
-        AppLogger.Initialize();
-
         try
         {
             BuildMetadata.LoadFromEnvironment();

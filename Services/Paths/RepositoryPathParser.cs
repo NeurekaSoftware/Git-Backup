@@ -30,7 +30,7 @@ public static class RepositoryPathParser
         }
 
         var owner = NormalizeSegment(pathSegments[0]);
-        var repositoryName = NormalizeSegment(TrimGitSuffix(pathSegments[^1]));
+        var repositoryName = NormalizeSegment(GitRepositoryUrl.TrimGitSuffix(pathSegments[^1]));
 
         var groupSegments = pathSegments.Skip(1).Take(pathSegments.Count - 2).ToList();
         var group = groupSegments.Count > 0
@@ -43,35 +43,12 @@ public static class RepositoryPathParser
 
         return new RepositoryPathInfo
         {
-            BaseDomain = NormalizeSegment(GetBaseDomain(uri.Host)),
             FullDomain = NormalizeSegment(uri.Host),
             Owner = owner,
             Group = group,
             SecondaryGroup = secondaryGroup,
             RepositoryName = repositoryName
         };
-    }
-
-    private static string GetBaseDomain(string host)
-    {
-        var labels = host
-            .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(label => label.ToLowerInvariant())
-            .ToArray();
-
-        if (labels.Length <= 2)
-        {
-            return string.Join('.', labels);
-        }
-
-        return string.Join('.', labels[^2], labels[^1]);
-    }
-
-    private static string TrimGitSuffix(string repositoryName)
-    {
-        return repositoryName.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
-            ? repositoryName[..^4]
-            : repositoryName;
     }
 
     private static string NormalizeSegment(string value)

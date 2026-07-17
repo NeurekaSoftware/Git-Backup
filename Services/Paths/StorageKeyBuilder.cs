@@ -186,6 +186,7 @@ public static class StorageKeyBuilder
             return string.Empty;
         }
 
-        return value.EndsWith('/') ? value : $"{value}/";
+        // Trim('/') already stripped any trailing slash, so a separator is always appended.
+        return $"{value}/";
     }
 }

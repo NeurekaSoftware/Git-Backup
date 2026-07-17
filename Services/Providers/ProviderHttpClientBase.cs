@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using GitBackup.Runtime;
+using GitBackup.Services.Paths;
 
 namespace GitBackup.Services.Providers;
 
@@ -240,12 +241,7 @@ public abstract class ProviderHttpClientBase
             throw new InvalidOperationException($"Repository URL '{cloneUrl}' does not contain owner and repository segments.");
         }
 
-        var repository = segments[^1];
-        if (repository.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
-        {
-            repository = repository[..^4];
-        }
-
+        var repository = GitRepositoryUrl.TrimGitSuffix(segments[^1]);
         return (segments[0], repository);
     }
 

@@ -2,8 +2,6 @@ namespace GitBackup.Services.Paths;
 
 public sealed class RepositoryPathInfo
 {
-    public required string BaseDomain { get; init; }
-
     public required string FullDomain { get; init; }
 
     public required string Owner { get; init; }

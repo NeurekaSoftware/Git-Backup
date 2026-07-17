@@ -18,13 +18,6 @@ public sealed class SettingsLoader
         "forgejo"
     };
 
-    private static readonly HashSet<string> SupportedPayloadSignatureModes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "full",
-        "streaming",
-        "unsigned"
-    };
-
     private readonly IDeserializer _deserializer;
 
     public SettingsLoader()
@@ -85,7 +78,7 @@ public sealed class SettingsLoader
         settings.Logging.LogLevel = NormalizeLogLevel(settings.Logging.LogLevel);
         settings.Storage ??= new StorageConfig();
         settings.Storage.ForcePathStyle ??= false;
-        settings.Storage.PayloadSignatureMode = NormalizePayloadSignatureMode(settings.Storage.PayloadSignatureMode);
+        settings.Storage.PayloadSignatureMode = PayloadSignatureModes.Normalize(settings.Storage.PayloadSignatureMode);
         settings.Storage.RetentionMinimum ??= 1;
         settings.Credentials ??= new Dictionary<string, CredentialConfig>(StringComparer.OrdinalIgnoreCase);
         settings.Credentials = new Dictionary<string, CredentialConfig>(settings.Credentials, StringComparer.OrdinalIgnoreCase);
@@ -183,7 +176,7 @@ public sealed class SettingsLoader
             errors.Add("storage.bucket is required.");
         }
 
-        if (!SupportedPayloadSignatureModes.Contains(settings.Storage.PayloadSignatureMode!))
+        if (!PayloadSignatureModes.Supported.Contains(settings.Storage.PayloadSignatureMode!))
         {
             errors.Add(
                 $"storage.payloadSignatureMode '{settings.Storage.PayloadSignatureMode}' is invalid. Supported values: full, streaming, unsigned.");
@@ -384,16 +377,6 @@ public sealed class SettingsLoader
         return AppLogger.TryParseLogLevel(configuredValue, out var level)
             ? AppLogger.ToConfigValue(level)
             : AppLogger.DefaultLogLevel;
-    }
-
-    private static string NormalizePayloadSignatureMode(string? configuredValue)
-    {
-        return configuredValue?.Trim().ToLowerInvariant() switch
-        {
-            "streaming" => "streaming",
-            "unsigned" => "unsigned",
-            _ => "full"
-        };
     }
 
     private static bool IsValidHttpUrl(string? value)

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
+using GitBackup.Services.Paths;
 
 namespace GitBackup.Services.Providers;
 
@@ -418,7 +419,7 @@ public sealed class GitLabRepositoryProviderClient
         string? body,
         IEnumerable<BackedUpComment> comments)
     {
-        var projectUrl = (context.WebUrl ?? TrimGitSuffix(context.CloneUrl)).TrimEnd('/');
+        var projectUrl = (context.WebUrl ?? GitRepositoryUrl.TrimGitSuffix(context.CloneUrl)).TrimEnd('/');
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var attachments = new List<BackedUpAttachment>();
 
@@ -485,7 +486,7 @@ public sealed class GitLabRepositoryProviderClient
             throw new InvalidOperationException($"Cannot resolve a GitLab project id from '{context.CloneUrl}'.");
         }
 
-        var path = TrimGitSuffix(uri.AbsolutePath.Trim('/'));
+        var path = GitRepositoryUrl.TrimGitSuffix(uri.AbsolutePath.Trim('/'));
         return Uri.EscapeDataString(path);
     }
 
@@ -518,8 +519,4 @@ public sealed class GitLabRepositoryProviderClient
         return marker > 0 ? webUrl[..marker] : null;
     }
 
-    private static string TrimGitSuffix(string value)
-    {
-        return value.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? value[..^4] : value;
-    }
 }

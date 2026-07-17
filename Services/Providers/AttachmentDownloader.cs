@@ -31,7 +31,10 @@ internal static class AttachmentDownloader
                 $"Attachment '{downloadUrl}' is {declaredLength} bytes, over the {MaxAttachmentBytes} byte limit.");
         }
 
-        var buffer = new MemoryStream();
+        // Pre-size the buffer when the server declares a length, avoiding the doubling reallocations
+        // (and repeated large-object-heap copies) a default-capacity MemoryStream would incur.
+        var capacity = declaredLength is > 0 and <= MaxAttachmentBytes ? (int)declaredLength.Value : 0;
+        var buffer = capacity > 0 ? new MemoryStream(capacity) : new MemoryStream();
         await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken))
         {
             await CopyWithLimitAsync(source, buffer, MaxAttachmentBytes, cancellationToken);

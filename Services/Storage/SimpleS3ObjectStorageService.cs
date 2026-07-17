@@ -119,7 +119,11 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
                 try
                 {
                     await using var writerStream = pipe.Writer.AsStream(leaveOpen: true);
-                    await using var gzipStream = new GZipStream(writerStream, CompressionLevel.SmallestSize);
+                    // A bare git mirror is almost entirely packfile data that git has already
+                    // zlib-compressed, so max-effort deflate spends far more CPU for negligible extra
+                    // reduction. Because this stream throttles the S3 upload to the compression rate,
+                    // Fastest keeps snapshot wall-clock down at near-identical object size.
+                    await using var gzipStream = new GZipStream(writerStream, CompressionLevel.Fastest);
                     TarFile.CreateFromDirectory(localDirectory, gzipStream, includeBaseDirectory: false);
                 }
                 catch (Exception exception)
@@ -392,10 +396,10 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
     private static SignatureMode ResolvePayloadSignatureMode(string? configuredMode)
     {
-        return configuredMode?.Trim().ToLowerInvariant() switch
+        return PayloadSignatureModes.Normalize(configuredMode) switch
         {
-            "streaming" => SignatureMode.StreamingSignature,
-            "unsigned" => SignatureMode.Unsigned,
+            PayloadSignatureModes.Streaming => SignatureMode.StreamingSignature,
+            PayloadSignatureModes.Unsigned => SignatureMode.Unsigned,
             _ => SignatureMode.FullSignature
         };
     }
