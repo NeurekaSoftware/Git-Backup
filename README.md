@@ -34,8 +34,8 @@ Automatically back up repositories from major Git forges to your S3-compatible o
 | Pull requests / merge requests | ✅ | ✅ | ✅ | ➖ |
 | PR/MR comments | ✅ | ✅ | ✅ | ➖ |
 | Issue / PR / MR attachments | ✅ | ✅ | ✅ | ➖ |
-| Releases | 🚧 | 🚧 | 🚧 | ➖ |
-| Release artifacts | 🚧 | 🚧 | 🚧 | ➖ |
+| Releases | ✅ | ✅ | ✅ | ➖ |
+| Release artifacts | ✅ | ✅ | ✅ | ➖ |
 | Gists / Snippets | ✅ | ✅ | ➖ | ➖ |
 | Starred gists / snippets | ✅ | ➖ | ➖ | ➖ |
 
@@ -112,6 +112,8 @@ repositories:
     includeIssueArtifacts: true
     includeMergeRequests: true
     includeMergeRequestsArtifacts: true
+    includeReleases: true
+    includeReleaseArtifacts: true
   - mode: provider
     provider: forgejo
     credential: forgejo
@@ -140,6 +142,8 @@ Each entry under `repositories` accepts:
 | `includeIssueArtifacts` | Also download files attached to issues and their comments. Requires `includeIssues`. Provider mode. | `false` |
 | `includeMergeRequests` | Back up pull/merge requests and their comment threads as JSON. Provider mode. | `false` |
 | `includeMergeRequestsArtifacts` | Also download files attached to pull/merge requests and their comments. Requires `includeMergeRequests`. Provider mode. | `false` |
+| `includeReleases` | Back up releases (tag, notes, and asset references) as JSON. Provider mode. | `false` |
+| `includeReleaseArtifacts` | Also download release asset files. Requires `includeReleases`. On GitLab this downloads attached asset-link files hosted on your instance only — auto-generated source archives are skipped (the repo mirror already captures them) and external links are recorded as references without being downloaded. Provider mode. | `false` |
 | `url` | A single repository URL, or a list of repository URLs. URL mode. | *required (url)* |
 | `credential` | Credential key (from `credentials`) used to authenticate. Optional for public repositories in url mode. | *required (provider)* |
 | `lfs` | Back up Git LFS objects. | `true` |
@@ -152,6 +156,6 @@ Local mirrors for repositories that are removed from the config (or disabled) ar
 > Backing up GitHub gists (`includeSnippets`) requires a **classic** personal access token with the `gist` scope — fine-grained tokens cannot read gists.
 
 > [!IMPORTANT]
-> Issues, pull/merge requests, and their attachments are backed up for **owned** repositories only. They are never fetched for **starred** repositories — even when `includeStarred` is enabled — nor for gists or snippets.
+> Issues, pull/merge requests, releases, and their attachments are backed up for **owned** repositories only. They are never fetched for **starred** repositories — even when `includeStarred` is enabled — nor for gists or snippets.
 
-Issues and pull/merge requests are stored as latest-state JSON documents (each with its comment thread embedded) next to the repository's Git snapshots, under `issues/{number}.json` and `merge-requests/{number}.json`, with an `index.json` manifest per collection and downloaded attachments under `issues/attachments/{number}/` and `merge-requests/attachments/{number}/`. Each run overwrites these in place and removes documents for issues/MRs that no longer exist upstream.
+Issues, pull/merge requests, and releases are stored as latest-state JSON documents (issues and MRs each embed their comment thread) next to the repository's Git snapshots, under `issues/{number}.json`, `merge-requests/{number}.json`, and `releases/{tag}.json`, with an `index.json` manifest per collection and downloaded files under `{collection}/attachments/{id}/`. Each run overwrites these in place and removes documents for items that no longer exist upstream.

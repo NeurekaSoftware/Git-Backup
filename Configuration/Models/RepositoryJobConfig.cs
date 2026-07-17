@@ -45,4 +45,10 @@ public sealed class RepositoryJobConfig
 
     [YamlMember(Alias = "includeMergeRequestsArtifacts")]
     public bool? IncludeMergeRequestsArtifacts { get; set; }
+
+    [YamlMember(Alias = "includeReleases")]
+    public bool? IncludeReleases { get; set; }
+
+    [YamlMember(Alias = "includeReleaseArtifacts")]
+    public bool? IncludeReleaseArtifacts { get; set; }
 }

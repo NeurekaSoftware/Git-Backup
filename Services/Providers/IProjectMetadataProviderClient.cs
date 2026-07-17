@@ -17,7 +17,9 @@ public interface IProjectMetadataProviderClient
 
     bool SupportsMergeRequests { get; }
 
-    // Whether the provider can resolve and download attachments referenced by issues/MRs.
+    bool SupportsReleases { get; }
+
+    // Whether the provider can resolve and download attachments/assets referenced by the metadata.
     bool SupportsArtifacts { get; }
 
     Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
@@ -26,6 +28,11 @@ public interface IProjectMetadataProviderClient
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
         CancellationToken cancellationToken);

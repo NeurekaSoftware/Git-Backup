@@ -7,10 +7,11 @@ using GitBackup.Services.Storage;
 namespace GitBackup.Services.Repositories;
 
 /// <summary>
-/// Backs up a single owned repository's issues and merge requests (with embedded comments and, when
-/// enabled, downloaded attachments) as latest-state JSON documents under the repository's storage
-/// prefix, then reconciles the stored set to match what the provider returned. Issues and merge
-/// requests are handled by one generic code path via <see cref="IBackedUpProjectItem"/>.
+/// Backs up a single owned repository's issues, merge requests, and releases (with embedded comments
+/// where applicable and, when enabled, downloaded attachments/assets) as latest-state JSON documents
+/// under the repository's storage prefix, then reconciles the stored set to match what the provider
+/// returned. All three collections are handled by one generic code path keyed on a string slug: the
+/// issue/MR number for those, the sanitized tag for releases.
 /// </summary>
 public sealed class ProjectMetadataSyncService
 {
@@ -54,6 +55,11 @@ public sealed class ProjectMetadataSyncService
         {
             await BackUpMergeRequestsAsync(repository, context, metadataClient, credential, repositoryPrefix, repositoryDisplay, objectStorageService, cancellationToken);
         }
+
+        if (repository.IncludeReleases == true)
+        {
+            await BackUpReleasesAsync(repository, context, metadataClient, credential, repositoryPrefix, repositoryDisplay, objectStorageService, cancellationToken);
+        }
     }
 
     private async Task BackUpIssuesAsync(
@@ -82,11 +88,7 @@ public sealed class ProjectMetadataSyncService
         catch (Exception exception)
         {
             // A partial fetch must never drive reconciliation deletes, so skip the whole collection.
-            AppLogger.Error(
-                exception,
-                "Issue backup failed. repository={Repository}, error={ErrorMessage}.",
-                repositoryDisplay,
-                exception.Message);
+            AppLogger.Error(exception, "Issue backup failed. repository={Repository}, error={ErrorMessage}.", repositoryDisplay, exception.Message);
             return;
         }
 
@@ -94,8 +96,12 @@ public sealed class ProjectMetadataSyncService
             issues,
             StorageKeyBuilder.BuildIssuesCollectionPrefix(repositoryPrefix),
             StorageKeyBuilder.BuildIssuesManifestObjectKey(repositoryPrefix),
-            number => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, number),
-            (number, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, number, fileName),
+            issue => issue.Number.ToString(),
+            slug => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, slug),
+            (slug, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, slug, fileName),
+            items => StorageMetadataDocuments.Serialize(items
+                .Select(issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt })
+                .ToList()),
             includeArtifacts: repository.IncludeIssueArtifacts == true,
             context,
             metadataClient,
@@ -131,11 +137,7 @@ public sealed class ProjectMetadataSyncService
         }
         catch (Exception exception)
         {
-            AppLogger.Error(
-                exception,
-                "Merge request backup failed. repository={Repository}, error={ErrorMessage}.",
-                repositoryDisplay,
-                exception.Message);
+            AppLogger.Error(exception, "Merge request backup failed. repository={Repository}, error={ErrorMessage}.", repositoryDisplay, exception.Message);
             return;
         }
 
@@ -143,8 +145,12 @@ public sealed class ProjectMetadataSyncService
             mergeRequests,
             StorageKeyBuilder.BuildMergeRequestsCollectionPrefix(repositoryPrefix),
             StorageKeyBuilder.BuildMergeRequestsManifestObjectKey(repositoryPrefix),
-            number => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, number),
-            (number, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, number, fileName),
+            mergeRequest => mergeRequest.Number.ToString(),
+            slug => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, slug),
+            (slug, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, slug, fileName),
+            items => StorageMetadataDocuments.Serialize(items
+                .Select(mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt })
+                .ToList()),
             includeArtifacts: repository.IncludeMergeRequestsArtifacts == true,
             context,
             metadataClient,
@@ -152,35 +158,84 @@ public sealed class ProjectMetadataSyncService
             objectStorageService,
             cancellationToken);
 
-        AppLogger.Info(
-            "Merge request backup completed. repository={Repository}, mergeRequests={MergeRequestCount}.",
-            repositoryDisplay,
-            mergeRequests.Count);
+        AppLogger.Info("Merge request backup completed. repository={Repository}, mergeRequests={MergeRequestCount}.", repositoryDisplay, mergeRequests.Count);
+    }
+
+    private async Task BackUpReleasesAsync(
+        RepositoryJobConfig repository,
+        ProjectMetadataContext context,
+        IProjectMetadataProviderClient metadataClient,
+        CredentialConfig credential,
+        string repositoryPrefix,
+        string repositoryDisplay,
+        IObjectStorageService objectStorageService,
+        CancellationToken cancellationToken)
+    {
+        if (!metadataClient.SupportsReleases)
+        {
+            AppLogger.Debug("Provider does not support releases. provider={Provider}.", repository.Provider);
+            return;
+        }
+
+        AppLogger.Info("Release backup started. repository={Repository}.", repositoryDisplay);
+
+        IReadOnlyList<BackedUpRelease> releases;
+        try
+        {
+            releases = await metadataClient.ListReleasesAsync(context, credential, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            AppLogger.Error(exception, "Release backup failed. repository={Repository}, error={ErrorMessage}.", repositoryDisplay, exception.Message);
+            return;
+        }
+
+        await SyncCollectionAsync(
+            releases,
+            StorageKeyBuilder.BuildReleasesCollectionPrefix(repositoryPrefix),
+            StorageKeyBuilder.BuildReleasesManifestObjectKey(repositoryPrefix),
+            release => ResolveReleaseSlug(release.Tag),
+            slug => StorageKeyBuilder.BuildReleaseObjectKey(repositoryPrefix, slug),
+            (slug, fileName) => StorageKeyBuilder.BuildReleaseAttachmentObjectKey(repositoryPrefix, slug, fileName),
+            items => StorageMetadataDocuments.Serialize(items
+                .Select(release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt })
+                .ToList()),
+            includeArtifacts: repository.IncludeReleaseArtifacts == true,
+            context,
+            metadataClient,
+            credential,
+            objectStorageService,
+            cancellationToken);
+
+        AppLogger.Info("Release backup completed. repository={Repository}, releases={ReleaseCount}.", repositoryDisplay, releases.Count);
     }
 
     private static async Task SyncCollectionAsync<T>(
         IReadOnlyList<T> items,
         string collectionPrefix,
         string manifestObjectKey,
-        Func<long, string> buildObjectKey,
-        Func<long, string, string> buildAttachmentObjectKey,
+        Func<T, string> getSlug,
+        Func<string, string> buildObjectKey,
+        Func<string, string, string> buildAttachmentObjectKey,
+        Func<IReadOnlyList<T>, string> serializeManifest,
         bool includeArtifacts,
         ProjectMetadataContext context,
         IProjectMetadataProviderClient metadataClient,
         CredentialConfig credential,
         IObjectStorageService objectStorageService,
         CancellationToken cancellationToken)
-        where T : class, IBackedUpProjectItem
+        where T : class, IBackedUpArtifactItem
     {
         var downloadArtifacts = includeArtifacts && metadataClient.SupportsArtifacts;
 
         foreach (var item in items)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var slug = getSlug(item);
 
             if (downloadArtifacts)
             {
-                await DownloadAttachmentsAsync(item, buildAttachmentObjectKey, context, metadataClient, credential, objectStorageService, cancellationToken);
+                await DownloadAttachmentsAsync(item, slug, buildAttachmentObjectKey, context, metadataClient, credential, objectStorageService, cancellationToken);
             }
             else
             {
@@ -189,28 +244,20 @@ public sealed class ProjectMetadataSyncService
             }
 
             await objectStorageService.UploadTextAsync(
-                buildObjectKey(item.Number),
+                buildObjectKey(slug),
                 StorageMetadataDocuments.Serialize(item),
                 cancellationToken);
         }
 
-        var manifest = items
-            .Select(item => new CollectionManifestEntry
-            {
-                Number = item.Number,
-                Title = item.Title,
-                State = item.State,
-                UpdatedAt = item.UpdatedAt
-            })
-            .ToList();
-        await objectStorageService.UploadTextAsync(manifestObjectKey, StorageMetadataDocuments.Serialize(manifest), cancellationToken);
+        await objectStorageService.UploadTextAsync(manifestObjectKey, serializeManifest(items), cancellationToken);
 
-        await ReconcileAsync(items, collectionPrefix, manifestObjectKey, objectStorageService, cancellationToken);
+        await ReconcileAsync(items, getSlug, collectionPrefix, manifestObjectKey, objectStorageService, cancellationToken);
     }
 
     private static async Task DownloadAttachmentsAsync(
-        IBackedUpProjectItem item,
-        Func<long, string, string> buildAttachmentObjectKey,
+        IBackedUpArtifactItem item,
+        string slug,
+        Func<string, string, string> buildAttachmentObjectKey,
         ProjectMetadataContext context,
         IProjectMetadataProviderClient metadataClient,
         CredentialConfig credential,
@@ -221,10 +268,17 @@ public sealed class ProjectMetadataSyncService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // Reference-only assets (e.g. a GitLab release link outside the instance) are recorded but
+            // never fetched, so the credential is never sent to a third-party host.
+            if (!attachment.Downloadable)
+            {
+                continue;
+            }
+
             try
             {
                 await using var stream = await metadataClient.OpenAttachmentAsync(context, credential, attachment.DownloadUrl, cancellationToken);
-                var objectKey = buildAttachmentObjectKey(item.Number, attachment.FileName);
+                var objectKey = buildAttachmentObjectKey(slug, attachment.FileName);
                 var contentType = MimeTypeResolver.ResolveFromFileName(attachment.FileName);
 
                 await objectStorageService.UploadStreamAsync(objectKey, stream, contentType, cancellationToken);
@@ -236,12 +290,8 @@ public sealed class ProjectMetadataSyncService
             catch (Exception exception)
             {
                 // Keep the reference (with no StorageKey) so the document still records that the file
-                // existed; one bad attachment must not fail the whole issue/MR.
-                AppLogger.Error(
-                    exception,
-                    "Attachment backup failed. originalPath={OriginalPath}, error={ErrorMessage}.",
-                    attachment.OriginalPath,
-                    exception.Message);
+                // existed; one bad attachment must not fail the whole item.
+                AppLogger.Error(exception, "Attachment backup failed. originalPath={OriginalPath}, error={ErrorMessage}.", attachment.OriginalPath, exception.Message);
             }
         }
     }
@@ -253,13 +303,14 @@ public sealed class ProjectMetadataSyncService
     /// </summary>
     private static async Task ReconcileAsync<T>(
         IReadOnlyList<T> items,
+        Func<T, string> getSlug,
         string collectionPrefix,
         string manifestObjectKey,
         IObjectStorageService objectStorageService,
         CancellationToken cancellationToken)
-        where T : IBackedUpProjectItem
+        where T : IBackedUpArtifactItem
     {
-        var fetchedNumbers = items.Select(item => item.Number).ToHashSet();
+        var fetchedSlugs = items.Select(getSlug).ToHashSet(StringComparer.Ordinal);
         var normalizedPrefix = StorageKeyBuilder.EnsurePrefix(collectionPrefix);
         var existingKeys = await objectStorageService.ListObjectKeysAsync(collectionPrefix, cancellationToken);
 
@@ -273,7 +324,7 @@ public sealed class ProjectMetadataSyncService
             }
 
             var relativeKey = objectKey[normalizedPrefix.Length..];
-            if (TryGetReconcilableNumber(relativeKey, out var number) && !fetchedNumbers.Contains(number))
+            if (TryGetReconcilableSlug(relativeKey, out var slug) && !fetchedSlugs.Contains(slug))
             {
                 keysToDelete.Add(objectKey);
             }
@@ -287,19 +338,24 @@ public sealed class ProjectMetadataSyncService
     }
 
     /// <summary>
-    /// Extracts the owning item number from a collection-relative key: <c>{number}.json</c> or
-    /// <c>attachments/{number}/...</c>. Returns false for the manifest and anything else, so those
-    /// are never reconciled away.
+    /// Extracts the owning item slug from a collection-relative key: <c>{slug}.json</c> or
+    /// <c>attachments/{slug}/...</c>. Returns false for the manifest and anything else, so those are
+    /// never reconciled away.
     /// </summary>
-    private static bool TryGetReconcilableNumber(string relativeKey, out long number)
+    private static bool TryGetReconcilableSlug(string relativeKey, out string slug)
     {
-        number = 0;
+        slug = string.Empty;
 
         var firstSlash = relativeKey.IndexOf('/');
         if (firstSlash < 0)
         {
-            return relativeKey.EndsWith(".json", StringComparison.Ordinal)
-                && long.TryParse(relativeKey[..^".json".Length], out number);
+            if (!relativeKey.EndsWith(".json", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            slug = relativeKey[..^".json".Length];
+            return slug.Length > 0;
         }
 
         if (!string.Equals(relativeKey[..firstSlash], StorageKeyBuilder.AttachmentsCollectionSegment, StringComparison.Ordinal))
@@ -309,7 +365,23 @@ public sealed class ProjectMetadataSyncService
 
         var afterAttachments = relativeKey[(firstSlash + 1)..];
         var nextSlash = afterAttachments.IndexOf('/');
-        var numberSegment = nextSlash < 0 ? afterAttachments : afterAttachments[..nextSlash];
-        return long.TryParse(numberSegment, out number);
+        slug = nextSlash < 0 ? afterAttachments : afterAttachments[..nextSlash];
+        return slug.Length > 0;
+    }
+
+    /// <summary>
+    /// Turns a release tag into a safe storage-key leaf. Guards the reserved manifest base name so a
+    /// tag literally named "index" cannot collide with the collection's index.json.
+    /// </summary>
+    private static string ResolveReleaseSlug(string tag)
+    {
+        var slug = AttachmentDownloader.SanitizeFileName(tag);
+        var reserved = Path.GetFileNameWithoutExtension(StorageKeyBuilder.CollectionManifestObjectName);
+        if (string.Equals(slug, reserved, StringComparison.Ordinal))
+        {
+            slug = $"{slug}-{AttachmentDownloader.ShortHash(tag)}";
+        }
+
+        return slug;
     }
 }

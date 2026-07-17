@@ -63,8 +63,8 @@ public sealed class RepositoryRetentionService
     /// are grouped by repository prefix, the newest <paramref name="retentionMinimum"/> are always
     /// protected, and anything older than <paramref name="cutoff"/> beyond that is deleted in a
     /// single batched call. When a repository loses all of its snapshots, its remaining non-archive
-    /// objects (the advisory metadata.json and any issues/ and merge-requests/ documents and
-    /// attachments) are removed too so no orphaned prefix is left behind.
+    /// objects (the advisory metadata.json and any issues/, merge-requests/, and releases/ documents
+    /// and attachments) are removed too so no orphaned prefix is left behind.
     /// </summary>
     private static async Task<(int DeletedSnapshots, int EmptiedRepositories)> ApplyRepositoryRetentionAsync(
         IObjectStorageService objectStorageService,
@@ -146,11 +146,12 @@ public sealed class RepositoryRetentionService
             return true;
         }
 
-        // Issue/merge-request documents and their attachments nest deeper under the repository prefix.
+        // Issue/merge-request/release documents and their attachments nest deeper under the prefix.
         foreach (var repositoryPrefix in emptiedRepositories)
         {
             if (objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.IssuesCollectionSegment}/", StringComparison.Ordinal) ||
-                objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}/", StringComparison.Ordinal))
+                objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}/", StringComparison.Ordinal) ||
+                objectKey.StartsWith($"{repositoryPrefix}/{StorageKeyBuilder.ReleasesCollectionSegment}/", StringComparison.Ordinal))
             {
                 return true;
             }

@@ -22,6 +22,8 @@ public sealed class GitLabRepositoryProviderClient
 
     public bool SupportsMergeRequests => true;
 
+    public bool SupportsReleases => true;
+
     public bool SupportsArtifacts => true;
 
     public async Task<IReadOnlyList<DiscoveredRepository>> ListRepositoriesAsync(
@@ -135,6 +137,28 @@ public sealed class GitLabRepositoryProviderClient
         }
 
         return mergeRequests;
+    }
+
+    public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            return [];
+        }
+
+        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
+        var projectId = ResolveProjectIdentifier(context);
+        var instanceHost = ResolveInstanceHost(context);
+        using var client = CreateGitLabClient(credential);
+
+        return await CollectAsync(
+            client,
+            page => $"{baseUrl}/projects/{projectId}/releases?per_page=100&page={page}",
+            item => MapRelease(item, instanceHost),
+            cancellationToken);
     }
 
     public async Task<Stream> OpenAttachmentAsync(
@@ -305,6 +329,88 @@ public sealed class GitLabRepositoryProviderClient
             UpdatedAt = GetDateTimeOffsetOrNull(item, "updated_at"),
             System = GetBoolean(item, "system")
         };
+    }
+
+    private static BackedUpRelease? MapRelease(JsonElement item, string instanceHost)
+    {
+        var tag = GetStringOrNull(item, "tag_name");
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        return new BackedUpRelease
+        {
+            Tag = tag,
+            Name = GetStringOrNull(item, "name"),
+            Body = GetStringOrNull(item, "description"),
+            Author = GetNestedStringOrNull(item, "author", "username"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            PublishedAt = GetDateTimeOffsetOrNull(item, "released_at"),
+            Commit = GetNestedStringOrNull(item, "commit", "id"),
+            WebUrl = GetNestedStringOrNull(item, "_links", "self"),
+            Attachments = ExtractReleaseLinks(item, instanceHost)
+        };
+    }
+
+    /// <summary>
+    /// Extracts GitLab release asset links. Only links whose target is on the GitLab instance are
+    /// marked downloadable — external links are recorded as references so the private token is never
+    /// sent to a third-party host. Auto-generated source archives (assets.sources) are skipped, since
+    /// the repository mirror already captures every tag's source.
+    /// </summary>
+    private static IReadOnlyList<BackedUpAttachment> ExtractReleaseLinks(JsonElement item, string instanceHost)
+    {
+        var attachments = new List<BackedUpAttachment>();
+        if (!item.TryGetProperty("assets", out var assets) ||
+            assets.ValueKind != JsonValueKind.Object ||
+            !assets.TryGetProperty("links", out var links) ||
+            links.ValueKind != JsonValueKind.Array)
+        {
+            return attachments;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var link in links.EnumerateArray())
+        {
+            var name = GetStringOrNull(link, "name");
+            var url = GetStringOrNull(link, "url");
+            var directUrl = GetStringOrNull(link, "direct_asset_url");
+            var reference = url ?? directUrl;
+            var fetchUrl = directUrl ?? url;
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(reference) || string.IsNullOrWhiteSpace(fetchUrl))
+            {
+                continue;
+            }
+
+            if (!seen.Add(reference))
+            {
+                continue;
+            }
+
+            attachments.Add(new BackedUpAttachment
+            {
+                FileName = $"{AttachmentDownloader.ShortHash(reference)}-{AttachmentDownloader.SanitizeFileName(name)}",
+                OriginalPath = reference,
+                DownloadUrl = fetchUrl,
+                Downloadable = IsInstanceHost(url ?? directUrl!, instanceHost)
+            });
+        }
+
+        return attachments;
+    }
+
+    private static string ResolveInstanceHost(ProjectMetadataContext context)
+    {
+        var reference = context.WebUrl ?? context.CloneUrl;
+        return Uri.TryCreate(reference, UriKind.Absolute, out var uri) ? uri.Host : string.Empty;
+    }
+
+    private static bool IsInstanceHost(string url, string instanceHost)
+    {
+        return !string.IsNullOrEmpty(instanceHost)
+            && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && string.Equals(uri.Host, instanceHost, StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<BackedUpAttachment> ExtractAttachments(

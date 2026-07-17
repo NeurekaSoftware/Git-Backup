@@ -208,7 +208,9 @@ public sealed class RepositorySyncService
     // (even when includeStarred is set) and never for gists or snippets, which have no such data.
     private static bool ShouldBackUpProjectMetadata(RepositoryJobConfig repository, DiscoveredRepository discoveredRepository)
     {
-        return (repository.IncludeIssues == true || repository.IncludeMergeRequests == true)
+        return (repository.IncludeIssues == true
+                || repository.IncludeMergeRequests == true
+                || repository.IncludeReleases == true)
             && discoveredRepository.Kind == DiscoveredRepositoryKind.Repository
             && !discoveredRepository.IsStarred;
     }

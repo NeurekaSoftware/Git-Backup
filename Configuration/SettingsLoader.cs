@@ -109,6 +109,8 @@ public sealed class SettingsLoader
             repository.IncludeIssueArtifacts ??= false;
             repository.IncludeMergeRequests ??= false;
             repository.IncludeMergeRequestsArtifacts ??= false;
+            repository.IncludeReleases ??= false;
+            repository.IncludeReleaseArtifacts ??= false;
             repository.Mode = repository.Mode?.Trim().ToLowerInvariant();
             repository.Provider = repository.Provider?.Trim().ToLowerInvariant();
             repository.Urls = repository.Urls?
@@ -269,6 +271,11 @@ public sealed class SettingsLoader
         {
             errors.Add($"repositories[{index}].includeMergeRequestsArtifacts requires includeMergeRequests.");
         }
+
+        if (repository.IncludeReleaseArtifacts == true && repository.IncludeReleases != true)
+        {
+            errors.Add($"repositories[{index}].includeReleaseArtifacts requires includeReleases.");
+        }
     }
 
     private static void ValidateUrlRepository(
@@ -330,6 +337,16 @@ public sealed class SettingsLoader
         if (repository.IncludeMergeRequestsArtifacts == true)
         {
             errors.Add($"repositories[{index}].includeMergeRequestsArtifacts is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeReleases == true)
+        {
+            errors.Add($"repositories[{index}].includeReleases is not allowed when mode is url.");
+        }
+
+        if (repository.IncludeReleaseArtifacts == true)
+        {
+            errors.Add($"repositories[{index}].includeReleaseArtifacts is not allowed when mode is url.");
         }
 
         if (string.IsNullOrWhiteSpace(repository.Credential))

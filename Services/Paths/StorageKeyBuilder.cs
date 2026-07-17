@@ -9,6 +9,7 @@ public static class StorageKeyBuilder
 
     public const string IssuesCollectionSegment = "issues";
     public const string MergeRequestsCollectionSegment = "merge-requests";
+    public const string ReleasesCollectionSegment = "releases";
     public const string AttachmentsCollectionSegment = "attachments";
     public const string CollectionManifestObjectName = "index.json";
 
@@ -65,29 +66,29 @@ public static class StorageKeyBuilder
         return $"{repositoryPrefix.Trim('/')}/{RepositoryMetadataObjectName}";
     }
 
-    // Issues and merge requests are stored as latest-state JSON documents nested under their
-    // repository prefix: {repositoryPrefix}/issues/{number}.json and
-    // {repositoryPrefix}/merge-requests/{number}.json, each collection with an index.json manifest
-    // and an attachments/{number}/ folder for downloaded binary uploads.
+    // Issues, merge requests, and releases are stored as latest-state JSON documents nested under
+    // their repository prefix: {repositoryPrefix}/{collection}/{identifier}.json, each collection
+    // with an index.json manifest and an attachments/{identifier}/ folder for downloaded files.
+    // The identifier is the issue/MR number for those collections and the sanitized tag for releases.
 
     public static string BuildIssuesCollectionPrefix(string repositoryPrefix)
     {
         return BuildCollectionPrefix(repositoryPrefix, IssuesCollectionSegment);
     }
 
-    public static string BuildIssueObjectKey(string repositoryPrefix, long number)
+    public static string BuildIssueObjectKey(string repositoryPrefix, string identifier)
     {
-        return $"{BuildIssuesCollectionPrefix(repositoryPrefix)}/{number}.json";
+        return BuildDocumentObjectKey(BuildIssuesCollectionPrefix(repositoryPrefix), identifier);
     }
 
     public static string BuildIssuesManifestObjectKey(string repositoryPrefix)
     {
-        return $"{BuildIssuesCollectionPrefix(repositoryPrefix)}/{CollectionManifestObjectName}";
+        return BuildManifestObjectKey(BuildIssuesCollectionPrefix(repositoryPrefix));
     }
 
-    public static string BuildIssueAttachmentObjectKey(string repositoryPrefix, long number, string fileName)
+    public static string BuildIssueAttachmentObjectKey(string repositoryPrefix, string identifier, string fileName)
     {
-        return $"{BuildIssuesCollectionPrefix(repositoryPrefix)}/{AttachmentsCollectionSegment}/{number}/{fileName}";
+        return BuildAttachmentObjectKey(BuildIssuesCollectionPrefix(repositoryPrefix), identifier, fileName);
     }
 
     public static string BuildMergeRequestsCollectionPrefix(string repositoryPrefix)
@@ -95,24 +96,59 @@ public static class StorageKeyBuilder
         return BuildCollectionPrefix(repositoryPrefix, MergeRequestsCollectionSegment);
     }
 
-    public static string BuildMergeRequestObjectKey(string repositoryPrefix, long number)
+    public static string BuildMergeRequestObjectKey(string repositoryPrefix, string identifier)
     {
-        return $"{BuildMergeRequestsCollectionPrefix(repositoryPrefix)}/{number}.json";
+        return BuildDocumentObjectKey(BuildMergeRequestsCollectionPrefix(repositoryPrefix), identifier);
     }
 
     public static string BuildMergeRequestsManifestObjectKey(string repositoryPrefix)
     {
-        return $"{BuildMergeRequestsCollectionPrefix(repositoryPrefix)}/{CollectionManifestObjectName}";
+        return BuildManifestObjectKey(BuildMergeRequestsCollectionPrefix(repositoryPrefix));
     }
 
-    public static string BuildMergeRequestAttachmentObjectKey(string repositoryPrefix, long number, string fileName)
+    public static string BuildMergeRequestAttachmentObjectKey(string repositoryPrefix, string identifier, string fileName)
     {
-        return $"{BuildMergeRequestsCollectionPrefix(repositoryPrefix)}/{AttachmentsCollectionSegment}/{number}/{fileName}";
+        return BuildAttachmentObjectKey(BuildMergeRequestsCollectionPrefix(repositoryPrefix), identifier, fileName);
+    }
+
+    public static string BuildReleasesCollectionPrefix(string repositoryPrefix)
+    {
+        return BuildCollectionPrefix(repositoryPrefix, ReleasesCollectionSegment);
+    }
+
+    public static string BuildReleaseObjectKey(string repositoryPrefix, string identifier)
+    {
+        return BuildDocumentObjectKey(BuildReleasesCollectionPrefix(repositoryPrefix), identifier);
+    }
+
+    public static string BuildReleasesManifestObjectKey(string repositoryPrefix)
+    {
+        return BuildManifestObjectKey(BuildReleasesCollectionPrefix(repositoryPrefix));
+    }
+
+    public static string BuildReleaseAttachmentObjectKey(string repositoryPrefix, string identifier, string fileName)
+    {
+        return BuildAttachmentObjectKey(BuildReleasesCollectionPrefix(repositoryPrefix), identifier, fileName);
     }
 
     private static string BuildCollectionPrefix(string repositoryPrefix, string collectionSegment)
     {
         return $"{repositoryPrefix.Trim('/')}/{collectionSegment}";
+    }
+
+    private static string BuildDocumentObjectKey(string collectionPrefix, string identifier)
+    {
+        return $"{collectionPrefix}/{identifier}.json";
+    }
+
+    private static string BuildManifestObjectKey(string collectionPrefix)
+    {
+        return $"{collectionPrefix}/{CollectionManifestObjectName}";
+    }
+
+    private static string BuildAttachmentObjectKey(string collectionPrefix, string identifier, string fileName)
+    {
+        return $"{collectionPrefix}/{AttachmentsCollectionSegment}/{identifier}/{fileName}";
     }
 
     /// <summary>

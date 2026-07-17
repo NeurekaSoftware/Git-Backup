@@ -17,6 +17,8 @@ public sealed class ForgejoRepositoryProviderClient
 
     public bool SupportsMergeRequests => true;
 
+    public bool SupportsReleases => true;
+
     public bool SupportsArtifacts => true;
 
     public async Task<IReadOnlyList<DiscoveredRepository>> ListRepositoriesAsync(
@@ -120,6 +122,27 @@ public sealed class ForgejoRepositoryProviderClient
         }
 
         return pulls;
+    }
+
+    public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            return [];
+        }
+
+        var baseUrl = ResolveApiBaseUrl(context.BaseUrl);
+        var repositoryPath = ResolveRepositoryPath(context);
+        using var client = CreateForgejoClient(credential);
+
+        return await CollectAsync(
+            client,
+            page => $"{baseUrl}/repos/{repositoryPath}/releases?limit=50&page={page}",
+            MapRelease,
+            cancellationToken);
     }
 
     public async Task<Stream> OpenAttachmentAsync(
@@ -279,6 +302,29 @@ public sealed class ForgejoRepositoryProviderClient
             MergedAt = GetDateTimeOffsetOrNull(item, "merged_at"),
             ClosedAt = GetDateTimeOffsetOrNull(item, "closed_at"),
             Labels = GetLabelNames(item, "labels"),
+            WebUrl = GetStringOrNull(item, "html_url"),
+            Attachments = ExtractAssets(item).ToList()
+        };
+    }
+
+    private static BackedUpRelease? MapRelease(JsonElement item)
+    {
+        var tag = GetStringOrNull(item, "tag_name");
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        return new BackedUpRelease
+        {
+            Tag = tag,
+            Name = GetStringOrNull(item, "name"),
+            Body = GetStringOrNull(item, "body"),
+            Author = GetNestedStringOrNull(item, "author", "login"),
+            Draft = GetBoolean(item, "draft"),
+            Prerelease = GetBoolean(item, "prerelease"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            PublishedAt = GetDateTimeOffsetOrNull(item, "published_at"),
             WebUrl = GetStringOrNull(item, "html_url"),
             Attachments = ExtractAssets(item).ToList()
         };

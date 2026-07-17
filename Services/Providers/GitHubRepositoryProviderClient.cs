@@ -23,6 +23,8 @@ public sealed class GitHubRepositoryProviderClient
 
     public bool SupportsMergeRequests => true;
 
+    public bool SupportsReleases => true;
+
     public bool SupportsArtifacts => true;
 
     public async Task<IReadOnlyList<DiscoveredRepository>> ListRepositoriesAsync(
@@ -146,6 +148,27 @@ public sealed class GitHubRepositoryProviderClient
             }
 
             return pulls;
+        }
+    }
+
+    public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+        ProjectMetadataContext context,
+        CredentialConfig credential,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(credential.ApiKey))
+        {
+            return [];
+        }
+
+        var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
+        using (client)
+        {
+            return await CollectAsync(
+                client,
+                page => $"{baseUrl}/repos/{repositoryPath}/releases?per_page=100&page={page}",
+                MapRelease,
+                cancellationToken);
         }
     }
 
@@ -299,6 +322,59 @@ public sealed class GitHubRepositoryProviderClient
             Labels = GetLabelNames(item, "labels"),
             WebUrl = GetStringOrNull(item, "html_url")
         };
+    }
+
+    private static BackedUpRelease? MapRelease(JsonElement item)
+    {
+        var tag = GetStringOrNull(item, "tag_name");
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        return new BackedUpRelease
+        {
+            Tag = tag,
+            Name = GetStringOrNull(item, "name"),
+            Body = GetStringOrNull(item, "body"),
+            Author = GetNestedStringOrNull(item, "author", "login"),
+            Draft = GetBoolean(item, "draft"),
+            Prerelease = GetBoolean(item, "prerelease"),
+            CreatedAt = GetDateTimeOffsetOrNull(item, "created_at"),
+            PublishedAt = GetDateTimeOffsetOrNull(item, "published_at"),
+            WebUrl = GetStringOrNull(item, "html_url"),
+            Attachments = ExtractReleaseAssets(item)
+        };
+    }
+
+    private static IReadOnlyList<BackedUpAttachment> ExtractReleaseAssets(JsonElement item)
+    {
+        var attachments = new List<BackedUpAttachment>();
+        if (!item.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+        {
+            return attachments;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var asset in assets.EnumerateArray())
+        {
+            var url = GetStringOrNull(asset, "browser_download_url");
+            var name = GetStringOrNull(asset, "name");
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(name) || !seen.Add(url))
+            {
+                continue;
+            }
+
+            attachments.Add(new BackedUpAttachment
+            {
+                FileName = $"{AttachmentDownloader.ShortHash(url)}-{AttachmentDownloader.SanitizeFileName(name)}",
+                OriginalPath = url,
+                DownloadUrl = url,
+                SizeBytes = GetInt64OrNull(asset, "size")
+            });
+        }
+
+        return attachments;
     }
 
     private static BackedUpComment? MapComment(JsonElement item)

@@ -21,10 +21,20 @@ public sealed class ProjectMetadataContext
 }
 
 /// <summary>
-/// Shared shape of a backed-up issue or merge request, letting the sync orchestrator serialize,
-/// download attachments for, index, and reconcile both collections with one code path.
+/// Anything the sync orchestrator can download attachments for and store — issues, merge requests,
+/// and releases. The orchestrator replaces <see cref="Attachments"/> after download (or clears it
+/// when artifacts are gated off).
 /// </summary>
-public interface IBackedUpProjectItem
+public interface IBackedUpArtifactItem
+{
+    IReadOnlyList<BackedUpAttachment> Attachments { get; set; }
+}
+
+/// <summary>
+/// Shared shape of a backed-up issue or merge request. Not implemented by releases (which are keyed
+/// by tag, not number, and carry no comments).
+/// </summary>
+public interface IBackedUpProjectItem : IBackedUpArtifactItem
 {
     long Number { get; }
 
@@ -33,8 +43,6 @@ public interface IBackedUpProjectItem
     string? State { get; }
 
     DateTimeOffset? UpdatedAt { get; }
-
-    IReadOnlyList<BackedUpAttachment> Attachments { get; set; }
 }
 
 /// <summary>
@@ -50,6 +58,49 @@ public sealed class CollectionManifestEntry
     public string? State { get; init; }
 
     public DateTimeOffset? UpdatedAt { get; init; }
+}
+
+/// <summary>
+/// One row in a release collection's <c>index.json</c> manifest. Releases are keyed by tag rather
+/// than a number, so they use a distinct manifest shape.
+/// </summary>
+public sealed class ReleaseManifestEntry
+{
+    public required string Tag { get; init; }
+
+    public string? Name { get; init; }
+
+    public DateTimeOffset? PublishedAt { get; init; }
+}
+
+/// <summary>
+/// A backed-up release with its asset references. Serialized as <c>{sanitized-tag}.json</c> under
+/// <c>releases/</c>. Fields are normalized across providers; provider-specific ones are null when
+/// the provider does not expose them.
+/// </summary>
+public sealed class BackedUpRelease : IBackedUpArtifactItem
+{
+    public required string Tag { get; init; }
+
+    public string? Name { get; init; }
+
+    public string? Body { get; init; }
+
+    public string? Author { get; init; }
+
+    public bool? Draft { get; init; }
+
+    public bool? Prerelease { get; init; }
+
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    public DateTimeOffset? PublishedAt { get; init; }
+
+    public string? Commit { get; init; }
+
+    public string? WebUrl { get; init; }
+
+    public IReadOnlyList<BackedUpAttachment> Attachments { get; set; } = [];
 }
 
 /// <summary>
@@ -162,4 +213,9 @@ public sealed class BackedUpAttachment
 
     [JsonIgnore]
     public required string DownloadUrl { get; init; }
+
+    // When false, the reference is recorded but the file is never downloaded (e.g. a GitLab release
+    // asset link pointing outside the instance, so the credential is never sent to a third party).
+    [JsonIgnore]
+    public bool Downloadable { get; init; } = true;
 }
