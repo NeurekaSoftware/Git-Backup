@@ -4,8 +4,6 @@ services:
     container_name: git-backup
     env_file:
       - .env
-    networks:
-      - git-backup
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -16,8 +14,10 @@ services:
       - CHOWN
       - SETGID
       - SETUID
+    networks:
+      - git-backup
     volumes:
-      - gitbackup-data:/app/data
+      - data:/app/data
       # Mount the config directory, not the file: a single-file bind mount pins the container to the
       # original inode, so host edits saved by write-and-rename never reach the container and hot reload
       # silently does nothing. A directory mount lets the container see every edit.
@@ -29,5 +29,4 @@ networks:
     name: git-backup
 
 volumes:
-  gitbackup-data:
-    name: gitbackup-data
+  data:
