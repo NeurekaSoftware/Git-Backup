@@ -73,16 +73,24 @@ public sealed class RepositoryRetentionService
         CancellationToken cancellationToken)
     {
         // Snapshots live under two roots: repositories/ (repos and owned project snippets) and
-        // snippets/ (gists and personal snippets). Retention treats both the same way.
-        var repositoryKeys = await objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.RepositoriesPrefix, cancellationToken);
-        var snippetKeys = await objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.SnippetsPrefix, cancellationToken);
-        var allKeys = repositoryKeys.Concat(snippetKeys).ToList();
+        // snippets/ (gists and personal snippets). Retention treats both the same way. The two roots
+        // are independent subtrees, so list them concurrently (matching the concurrent-walk pattern
+        // used for provider discovery) instead of one full paginated walk after the other.
+        var repositoryKeysTask = objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.RepositoriesPrefix, cancellationToken);
+        var snippetKeysTask = objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.SnippetsPrefix, cancellationToken);
+        await Task.WhenAll(repositoryKeysTask, snippetKeysTask);
+        var allKeys = (await repositoryKeysTask).Concat(await snippetKeysTask).ToList();
 
+        // Classify every key exactly once here: archive keys feed the retention grouping below, and
+        // everything else is a candidate orphan collected in nonArchiveKeys — so the orphan pass can
+        // filter that list rather than re-parsing every key with TryGetArchiveTimestamp a second time.
         var snapshotsByRepository = new Dictionary<string, List<(string ObjectKey, long TimestampUnixSeconds)>>(StringComparer.Ordinal);
+        var nonArchiveKeys = new List<string>();
         foreach (var objectKey in allKeys)
         {
             if (!StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out var timestampUnixSeconds))
             {
+                nonArchiveKeys.Add(objectKey);
                 continue;
             }
 
@@ -134,10 +142,8 @@ public sealed class RepositoryRetentionService
             reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.ReleasesCollectionSegment}/");
         }
 
-        var orphanKeys = allKeys
-            .Where(objectKey =>
-                !StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out _) &&
-                IsReclaimableOrphan(objectKey, emptiedRepositories, reclaimableCollectionPrefixes))
+        var orphanKeys = nonArchiveKeys
+            .Where(objectKey => IsReclaimableOrphan(objectKey, emptiedRepositories, reclaimableCollectionPrefixes))
             .ToList();
 
         var keysToDelete = expiredKeys.Concat(orphanKeys).ToList();
