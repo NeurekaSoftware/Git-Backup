@@ -131,10 +131,15 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
 
         if (credential is not null)
         {
-            processStartInfo.ArgumentList.Add("-c");
-            processStartInfo.ArgumentList.Add($"http.extraheader=Authorization: Basic {CreateBasicHeader(credential)}");
-            processStartInfo.ArgumentList.Add("-c");
-            processStartInfo.ArgumentList.Add("credential.helper=");
+            // Inject the auth header (and disable credential helpers) via git's environment-based
+            // config rather than `-c` arguments, so the token never appears in the git process's
+            // world-readable /proc/<pid>/cmdline. GIT_CONFIG_* is honored by git and its HTTP/LFS
+            // subprocesses just like `-c`.
+            processStartInfo.Environment["GIT_CONFIG_COUNT"] = "2";
+            processStartInfo.Environment["GIT_CONFIG_KEY_0"] = "http.extraheader";
+            processStartInfo.Environment["GIT_CONFIG_VALUE_0"] = $"Authorization: Basic {CreateBasicHeader(credential)}";
+            processStartInfo.Environment["GIT_CONFIG_KEY_1"] = "credential.helper";
+            processStartInfo.Environment["GIT_CONFIG_VALUE_1"] = string.Empty;
         }
 
         foreach (var argument in arguments)

@@ -20,8 +20,10 @@ RUN --mount=type=cache,target=/root/.nuget/packages,sharing=locked \
 FROM mcr.microsoft.com/dotnet/runtime:10.0-noble
 ARG GIT_TAG=dev
 ARG GIT_HASH=unknown
-ARG PUID
-ARG PGID
+# Default to a non-root UID/GID so an image run without PUID/PGID still drops privileges in the
+# entrypoint (running as root now requires explicitly passing PUID=0/PGID=0).
+ARG PUID=1000
+ARG PGID=1000
 ENV GIT_TAG=${GIT_TAG}
 ENV GIT_HASH=${GIT_HASH}
 ENV PUID=$PUID
