@@ -176,9 +176,27 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
     public async Task UploadTextAsync(string objectKey, string content, CancellationToken cancellationToken)
     {
+        // A metadata document is small and already in memory, so a single PutObject is cheaper than a
+        // multipart round trip (initiate + part + complete).
+        var normalizedObjectKey = objectKey.Trim('/');
+        if (string.IsNullOrWhiteSpace(normalizedObjectKey))
+        {
+            throw new ArgumentException("Object key is required.", nameof(objectKey));
+        }
+
         var bytes = Encoding.UTF8.GetBytes(content);
+        AppLogger.Debug("Uploading object. objectKey={ObjectKey}, contentType={ContentType}.", normalizedObjectKey, JsonContentType);
+
         using var stream = new MemoryStream(bytes, writable: false);
-        await UploadStreamAsync(objectKey, stream, JsonContentType, cancellationToken);
+        await ExecuteAsync(
+            "upload object",
+            normalizedObjectKey,
+            () => _client.PutObjectAsync(
+                _bucket,
+                normalizedObjectKey,
+                stream,
+                request => request.ContentType.Set(JsonContentType),
+                cancellationToken));
     }
 
     public async Task UploadStreamAsync(
@@ -195,19 +213,24 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
         var resolvedContentType = string.IsNullOrWhiteSpace(contentType) ? MimeTypeResolver.DefaultContentType : contentType;
         AppLogger.Debug(
-            "Uploading object. objectKey={ObjectKey}, contentType={ContentType}.",
+            "Streaming object upload. objectKey={ObjectKey}, contentType={ContentType}.",
             normalizedObjectKey,
             resolvedContentType);
 
+        // Upload straight from the (non-seekable) source stream via multipart — the same path the
+        // archive uses — so an attachment of unknown or large size is never buffered fully in memory.
+        // A small attachment is sent as a single final part.
         await ExecuteAsync(
             "upload object",
             normalizedObjectKey,
-            () => _client.PutObjectAsync(
+            () => _client.MultipartUploadAsync(
                 _bucket,
                 normalizedObjectKey,
                 content,
-                request => request.ContentType.Set(resolvedContentType),
-                cancellationToken));
+                MultipartPartSizeBytes,
+                MultipartParallelParts,
+                config: request => request.ContentType.Set(resolvedContentType),
+                token: cancellationToken));
     }
 
     public async Task<IReadOnlyList<string>> ListObjectKeysAsync(string prefix, CancellationToken cancellationToken)

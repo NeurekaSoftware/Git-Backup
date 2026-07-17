@@ -292,7 +292,9 @@ public sealed class ProjectMetadataSyncService
 
                 attachment.StorageKey = objectKey;
                 attachment.ContentType = contentType;
-                attachment.SizeBytes = stream.CanSeek ? stream.Length : null;
+                // The attachment is streamed (non-seekable), so its length is not known here; keep the
+                // provider-reported size (set for release assets) rather than overwriting it with null.
+                attachment.SizeBytes = stream.CanSeek ? stream.Length : attachment.SizeBytes;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

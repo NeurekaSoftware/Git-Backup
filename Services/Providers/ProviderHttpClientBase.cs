@@ -78,8 +78,10 @@ public abstract class ProviderHttpClientBase
     }
 
     /// <summary>
-    /// Downloads an issue/MR/release attachment into memory. Identical across providers once the auth
-    /// scheme is supplied by <see cref="ApplyAuthentication"/>.
+    /// Opens an issue/MR/release attachment as a stream for direct upload to storage. The returned
+    /// stream owns the authenticated client and disposes it once the caller finishes, so the attachment
+    /// is never buffered fully in memory. Identical across providers once the auth scheme is supplied by
+    /// <see cref="ApplyAuthentication"/>.
     /// </summary>
     public async Task<Stream> OpenAttachmentAsync(
         ProjectMetadataContext context,
@@ -87,8 +89,16 @@ public abstract class ProviderHttpClientBase
         string downloadUrl,
         CancellationToken cancellationToken)
     {
-        using var client = CreateAuthenticatedAttachmentClient(credential);
-        return await AttachmentDownloader.DownloadToMemoryAsync(client, downloadUrl, cancellationToken);
+        var client = CreateAuthenticatedAttachmentClient(credential);
+        try
+        {
+            return await AttachmentDownloader.OpenStreamAsync(client, downloadUrl, cancellationToken);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
     }
 
     private static ProductInfoHeaderValue CreateUserAgent()

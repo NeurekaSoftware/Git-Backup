@@ -7,42 +7,49 @@ using GitBackup.Services.Paths;
 namespace GitBackup.Services.Providers;
 
 /// <summary>
-/// Shared helpers for downloading issue/merge-request attachments into memory with a size cap and
-/// for turning arbitrary upload names into safe storage-key leaves. Buffering fully into memory
-/// keeps attachment lifetime simple (the authenticated client can be disposed before the caller
-/// uploads) and attachments are small in practice; the cap guards against pathological uploads.
+/// Shared helpers for downloading issue/merge-request attachments and for turning arbitrary upload
+/// names into safe storage-key leaves. Attachments are streamed straight through to storage rather
+/// than buffered in memory (the returned stream owns the HTTP client/response), and a size cap guards
+/// against pathological uploads.
 /// </summary>
 internal static class AttachmentDownloader
 {
     public const long MaxAttachmentBytes = 100L * 1024 * 1024;
     private const int MaxRedirects = 5;
 
-    public static async Task<Stream> DownloadToMemoryAsync(
+    /// <summary>
+    /// Opens an attachment as a streaming, size-capped read that the caller uploads straight to storage
+    /// without ever buffering the whole file in memory. The returned stream owns <paramref name="client"/>
+    /// and the HTTP response and disposes both when it is disposed, so the caller must dispose the stream
+    /// once the upload completes. Redirects are followed manually (see
+    /// <see cref="SendFollowingRedirectsAsync"/>) so every hop is SSRF-checked.
+    /// </summary>
+    public static async Task<Stream> OpenStreamAsync(
         HttpClient client,
         string downloadUrl,
         CancellationToken cancellationToken)
     {
-        using var response = await SendFollowingRedirectsAsync(client, downloadUrl, cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        var declaredLength = response.Content.Headers.ContentLength;
-        if (declaredLength > MaxAttachmentBytes)
+        var response = await SendFollowingRedirectsAsync(client, downloadUrl, cancellationToken);
+        try
         {
-            throw new InvalidOperationException(
-                $"Attachment '{RedactUrl(downloadUrl)}' is {declaredLength} bytes, over the {MaxAttachmentBytes} byte limit.");
-        }
+            response.EnsureSuccessStatusCode();
 
-        // Pre-size the buffer when the server declares a length, avoiding the doubling reallocations
-        // (and repeated large-object-heap copies) a default-capacity MemoryStream would incur.
-        var capacity = declaredLength is > 0 and <= MaxAttachmentBytes ? (int)declaredLength.Value : 0;
-        var buffer = capacity > 0 ? new MemoryStream(capacity) : new MemoryStream();
-        await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken))
+            var declaredLength = response.Content.Headers.ContentLength;
+            if (declaredLength > MaxAttachmentBytes)
+            {
+                throw new InvalidOperationException(
+                    $"Attachment '{RedactUrl(downloadUrl)}' is {declaredLength} bytes, over the {MaxAttachmentBytes} byte limit.");
+            }
+
+            var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+            return new CappedAttachmentStream(source, response, client, MaxAttachmentBytes);
+        }
+        catch
         {
-            await CopyWithLimitAsync(source, buffer, MaxAttachmentBytes, cancellationToken);
+            // The response is owned here on the failure path; the client is disposed by the caller.
+            response.Dispose();
+            throw;
         }
-
-        buffer.Position = 0;
-        return buffer;
     }
 
     /// <summary>
@@ -222,24 +229,91 @@ internal static class AttachmentDownloader
         return false;
     }
 
-    private static async Task CopyWithLimitAsync(
-        Stream source,
-        Stream destination,
-        long maxBytes,
-        CancellationToken cancellationToken)
+    // A read-only pass-through stream that enforces the attachment size cap as bytes are read and, when
+    // disposed, tears down the HTTP response and the owning client. This lets an attachment be uploaded
+    // to storage directly from the network without buffering it in memory.
+    private sealed class CappedAttachmentStream : Stream
     {
-        var buffer = new byte[81920];
-        long total = 0;
-        int read;
-        while ((read = await source.ReadAsync(buffer, cancellationToken)) > 0)
+        private readonly Stream _inner;
+        private readonly HttpResponseMessage _response;
+        private readonly HttpClient _ownedClient;
+        private readonly long _maxBytes;
+        private long _totalRead;
+
+        public CappedAttachmentStream(Stream inner, HttpResponseMessage response, HttpClient ownedClient, long maxBytes)
         {
-            total += read;
-            if (total > maxBytes)
+            _inner = inner;
+            _response = response;
+            _ownedClient = ownedClient;
+            _maxBytes = maxBytes;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            return Track(_inner.Read(buffer, offset, count));
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            return Track(await _inner.ReadAsync(buffer, cancellationToken));
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        }
+
+        private int Track(int read)
+        {
+            if (read > 0)
             {
-                throw new InvalidOperationException($"Attachment exceeds the {maxBytes} byte limit.");
+                _totalRead += read;
+                if (_totalRead > _maxBytes)
+                {
+                    throw new InvalidOperationException($"Attachment exceeds the {_maxBytes} byte limit.");
+                }
             }
 
-            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            return read;
+        }
+
+        public override void Flush() => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+                _response.Dispose();
+                _ownedClient.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            await _inner.DisposeAsync();
+            _response.Dispose();
+            _ownedClient.Dispose();
+            await base.DisposeAsync();
         }
     }
 }
