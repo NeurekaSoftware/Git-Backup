@@ -37,9 +37,10 @@ internal static class AttachmentDownloader
     public static async Task<Stream> OpenStreamAsync(
         HttpClient client,
         string downloadUrl,
+        string? trustedHost,
         CancellationToken cancellationToken)
     {
-        var response = await SendFollowingRedirectsAsync(client, downloadUrl, cancellationToken);
+        var response = await SendFollowingRedirectsAsync(client, downloadUrl, trustedHost, cancellationToken);
         try
         {
             response.EnsureSuccessStatusCode();
@@ -72,6 +73,7 @@ internal static class AttachmentDownloader
     private static async Task<HttpResponseMessage> SendFollowingRedirectsAsync(
         HttpClient client,
         string downloadUrl,
+        string? trustedHost,
         CancellationToken cancellationToken)
     {
         if (!Uri.TryCreate(downloadUrl, UriKind.Absolute, out var currentUri))
@@ -87,7 +89,7 @@ internal static class AttachmentDownloader
 
         for (var hop = 0; ; hop++)
         {
-            await EnsureSafeDownloadHostAsync(currentUri, cancellationToken);
+            await EnsureSafeDownloadHostAsync(currentUri, trustedHost, cancellationToken);
 
             using var request = new HttpRequestMessage(HttpMethod.Get, currentUri);
             if (auth is not null && string.Equals(currentUri.Host, originalHost, StringComparison.OrdinalIgnoreCase))
@@ -172,16 +174,26 @@ internal static class AttachmentDownloader
     /// <summary>
     /// Rejects an attachment URL that is not http(s) or that resolves to a private, loopback, or
     /// link-local address, so a crafted provider response (or a redirect hop) cannot make the
-    /// authenticated client reach an internal endpoint (e.g. a cloud metadata service). DNS names are
-    /// resolved and every returned address is checked, not just literal-IP hosts. A residual
-    /// DNS-rebinding TOCTOU remains (the name could resolve differently when the socket actually
-    /// connects); fully closing it would require pinning the connection to the validated address.
+    /// authenticated client reach an internal endpoint (e.g. a cloud metadata service).
+    /// <paramref name="trustedHost"/> is the forge this repository came from, which is exempt: a
+    /// self-hosted instance is routinely on private address space and is already trusted, since the API
+    /// calls that discovered the attachment went to that same host with the same credential. Every other
+    /// target still fails closed. DNS names are resolved and every returned address is checked, not just
+    /// literal-IP hosts. A residual DNS-rebinding TOCTOU remains (the name could resolve differently when
+    /// the socket actually connects); fully closing it would require pinning the connection to the
+    /// validated address.
     /// </summary>
-    private static async Task EnsureSafeDownloadHostAsync(Uri uri, CancellationToken cancellationToken)
+    private static async Task EnsureSafeDownloadHostAsync(Uri uri, string? trustedHost, CancellationToken cancellationToken)
     {
         if (!GitRepositoryUrl.IsHttpOrHttps(uri))
         {
             throw new InvalidOperationException($"Attachment URL '{RedactUrl(uri.ToString())}' is not an http or https URL.");
+        }
+
+        if (!string.IsNullOrEmpty(trustedHost)
+            && string.Equals(uri.Host, trustedHost, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
         }
 
         IPAddress[] addresses;

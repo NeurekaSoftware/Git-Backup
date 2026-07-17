@@ -366,12 +366,6 @@ public sealed class GitLabRepositoryProviderClient
         return attachments;
     }
 
-    private static string ResolveInstanceHost(ProjectMetadataContext context)
-    {
-        var reference = context.WebUrl ?? context.CloneUrl;
-        return Uri.TryCreate(reference, UriKind.Absolute, out var uri) ? uri.Host : string.Empty;
-    }
-
     private static bool IsInstanceHost(string url, string instanceHost)
     {
         return !string.IsNullOrEmpty(instanceHost)

@@ -93,13 +93,26 @@ public abstract class ProviderHttpClientBase
         var client = CreateAuthenticatedAttachmentClient(credential);
         try
         {
-            return await AttachmentDownloader.OpenStreamAsync(client, downloadUrl, cancellationToken);
+            return await AttachmentDownloader.OpenStreamAsync(
+                client,
+                downloadUrl,
+                ResolveInstanceHost(context),
+                cancellationToken);
         }
         catch
         {
             client.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// The host of the forge this repository came from, or an empty string when it cannot be determined.
+    /// </summary>
+    protected static string ResolveInstanceHost(ProjectMetadataContext context)
+    {
+        var reference = context.WebUrl ?? context.CloneUrl;
+        return Uri.TryCreate(reference, UriKind.Absolute, out var uri) ? uri.Host : string.Empty;
     }
 
     private static ProductInfoHeaderValue CreateUserAgent()
