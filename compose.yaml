@@ -10,6 +10,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    # entrypoint.sh starts as root and drops to PUID:PGID: chown needs CHOWN, and gosu (not setuid)
+    # needs SETGID/SETUID to make the switch. Everything else stays dropped.
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
     volumes:
       - gitbackup-data:/app/data
       - ./settings.yaml:/app/data/settings.yaml:ro
