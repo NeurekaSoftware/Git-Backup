@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
@@ -361,6 +362,43 @@ public abstract class ProviderHttpClientBase
     /// for GitHub/Forgejo, an <c>X-Next-Page</c> header for GitLab). <paramref name="mapItem"/> may
     /// carry a side effect (e.g. collecting per-comment attachments) and returns null to skip.
     /// </summary>
+    /// <summary>
+    /// Reads and maps a single page of a JSON-array endpoint, returning the mapped items and whether a
+    /// further page follows (per the provider's <paramref name="hasNextPage"/> signal).
+    /// </summary>
+    private static async Task<(List<T> Items, bool HasNextPage)> FetchPageAsync<T>(
+        HttpClient client,
+        string requestUri,
+        int page,
+        Func<JsonElement, T?> mapItem,
+        NextPageStrategy hasNextPage,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        using var response = await GetWithRetryAsync(client, requestUri, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        using var document = await ReadJsonDocumentAsync(response, cancellationToken);
+        var items = new List<T>();
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            return (items, false);
+        }
+
+        var itemCount = 0;
+        foreach (var item in document.RootElement.EnumerateArray())
+        {
+            itemCount++;
+            var mapped = mapItem(item);
+            if (mapped is not null)
+            {
+                items.Add(mapped);
+            }
+        }
+
+        return (items, hasNextPage(response, page, itemCount));
+    }
+
     protected static async Task<List<T>> CollectAsync<T>(
         HttpClient client,
         Func<int, string> buildRequestUri,
@@ -373,34 +411,43 @@ public abstract class ProviderHttpClientBase
 
         for (var page = 1; ; page++)
         {
-            var requestUri = buildRequestUri(page);
-            using var response = await GetWithRetryAsync(client, requestUri, cancellationToken);
-            response.EnsureSuccessStatusCode();
+            var (pageItems, hasNext) = await FetchPageAsync(client, buildRequestUri(page), page, mapItem, hasNextPage, cancellationToken);
+            items.AddRange(pageItems);
 
-            using var document = await ReadJsonDocumentAsync(response, cancellationToken);
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                break;
-            }
-
-            var itemCount = 0;
-            foreach (var item in document.RootElement.EnumerateArray())
-            {
-                itemCount++;
-                var mapped = mapItem(item);
-                if (mapped is not null)
-                {
-                    items.Add(mapped);
-                }
-            }
-
-            if (!hasNextPage(response, page, itemCount))
+            if (!hasNext)
             {
                 break;
             }
         }
 
         return items;
+    }
+
+    /// <summary>
+    /// Streams a paginated JSON-array endpoint page by page, yielding mapped items in order without
+    /// ever holding the whole result set in memory.
+    /// </summary>
+    protected static async IAsyncEnumerable<T> CollectStreamAsync<T>(
+        HttpClient client,
+        Func<int, string> buildRequestUri,
+        Func<JsonElement, T?> mapItem,
+        NextPageStrategy hasNextPage,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+        where T : class
+    {
+        for (var page = 1; ; page++)
+        {
+            var (items, hasNext) = await FetchPageAsync(client, buildRequestUri(page), page, mapItem, hasNextPage, cancellationToken);
+            foreach (var item in items)
+            {
+                yield return item;
+            }
+
+            if (!hasNext)
+            {
+                break;
+            }
+        }
     }
 
     /// <summary>
@@ -418,24 +465,38 @@ public abstract class ProviderHttpClientBase
     /// shared here; <paramref name="populateItem"/> carries the only per-provider work — which comment
     /// endpoint to read and how attachments are gathered.
     /// </summary>
-    protected static async Task<List<TItem>> CollectWithCommentsAsync<TItem>(
+    protected static async IAsyncEnumerable<TItem> CollectWithCommentsAsync<TItem>(
         HttpClient client,
         int concurrency,
         Func<int, string> buildListUri,
         Func<JsonElement, TItem?> mapItem,
         NextPageStrategy hasNextPage,
         Func<TItem, CancellationToken, Task> populateItem,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
         where TItem : class
     {
-        var items = await CollectAsync(client, buildListUri, mapItem, hasNextPage, cancellationToken);
+        // Stream one page at a time: fetch a page, populate its items (comments/attachments) in parallel
+        // up to the configured degree, then yield them in order. Peak memory is one page rather than the
+        // whole collection, while the per-page fan-out preserves the fetch parallelism.
+        for (var page = 1; ; page++)
+        {
+            var (items, hasNext) = await FetchPageAsync(client, buildListUri(page), page, mapItem, hasNextPage, cancellationToken);
 
-        await Parallel.ForEachAsync(
-            items,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, concurrency), CancellationToken = cancellationToken },
-            async (item, token) => await populateItem(item, token));
+            await Parallel.ForEachAsync(
+                items,
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, concurrency), CancellationToken = cancellationToken },
+                async (item, token) => await populateItem(item, token));
 
-        return items;
+            foreach (var item in items)
+            {
+                yield return item;
+            }
+
+            if (!hasNext)
+            {
+                break;
+            }
+        }
     }
 
     /// <summary>

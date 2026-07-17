@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
@@ -90,14 +91,14 @@ public sealed class GitHubRepositoryProviderClient
         return DistinctByCloneUrl(walkResults.SelectMany(walk => walk));
     }
 
-    public async Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
+    public async IAsyncEnumerable<BackedUpIssue> ListIssuesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
@@ -108,31 +109,30 @@ public sealed class GitHubRepositoryProviderClient
             // the issue_url it belongs to, so they can be grouped by number in memory.
             var commentsByNumber = await FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken);
 
-            var issues = await CollectAsync(
+            var issues = CollectStreamAsync(
                 client,
                 page => $"{baseUrl}/repos/{repositoryPath}/issues?state=all&per_page={PageSize}&page={page}",
                 MapIssue,
                 PageIsFull(PageSize),
                 cancellationToken);
 
-            foreach (var issue in issues)
+            await foreach (var issue in issues)
             {
                 issue.Comments = commentsByNumber.TryGetValue(issue.Number, out var comments) ? comments : [];
                 issue.Attachments = ExtractAttachments(issue.Body, issue.Comments);
+                yield return issue;
             }
-
-            return issues;
         }
     }
 
-    public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
+    public async IAsyncEnumerable<BackedUpMergeRequest> ListMergeRequestsAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
@@ -143,42 +143,46 @@ public sealed class GitHubRepositoryProviderClient
             // per pull request.
             var commentsByNumber = await FetchIssueCommentsByNumberAsync(client, baseUrl, repositoryPath, cancellationToken);
 
-            var pulls = await CollectAsync(
+            var pulls = CollectStreamAsync(
                 client,
                 page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&per_page={PageSize}&page={page}",
                 MapGiteaPullRequest,
                 PageIsFull(PageSize),
                 cancellationToken);
 
-            foreach (var pull in pulls)
+            await foreach (var pull in pulls)
             {
                 pull.Comments = commentsByNumber.TryGetValue(pull.Number, out var comments) ? comments : [];
                 pull.Attachments = ExtractAttachments(pull.Body, pull.Comments);
+                yield return pull;
             }
-
-            return pulls;
         }
     }
 
-    public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+    public async IAsyncEnumerable<BackedUpRelease> ListReleasesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectAsync(
+            var releases = CollectStreamAsync(
                 client,
                 page => $"{baseUrl}/repos/{repositoryPath}/releases?per_page={PageSize}&page={page}",
                 MapGiteaRelease,
                 PageIsFull(PageSize),
                 cancellationToken);
+
+            await foreach (var release in releases)
+            {
+                yield return release;
+            }
         }
     }
 

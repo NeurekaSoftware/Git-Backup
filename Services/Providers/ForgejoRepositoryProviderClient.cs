@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using GitBackup.Configuration.Models;
 using GitBackup.Runtime;
@@ -60,20 +61,20 @@ public sealed class ForgejoRepositoryProviderClient
         return DistinctByCloneUrl(owned.Concat(starred));
     }
 
-    public async Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
+    public async IAsyncEnumerable<BackedUpIssue> ListIssuesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectWithCommentsAsync(
+            var issues = CollectWithCommentsAsync(
                 client,
                 context.Concurrency,
                 page => $"{baseUrl}/repos/{repositoryPath}/issues?type=issues&state=all&limit={PageSize}&page={page}",
@@ -90,23 +91,28 @@ public sealed class ForgejoRepositoryProviderClient
                     issue.Attachments = MergeAttachments(issue.Attachments, commentAttachments);
                 },
                 cancellationToken);
+
+            await foreach (var issue in issues)
+            {
+                yield return issue;
+            }
         }
     }
 
-    public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
+    public async IAsyncEnumerable<BackedUpMergeRequest> ListMergeRequestsAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectWithCommentsAsync(
+            var pulls = CollectWithCommentsAsync(
                 client,
                 context.Concurrency,
                 page => $"{baseUrl}/repos/{repositoryPath}/pulls?state=all&limit={PageSize}&page={page}",
@@ -124,28 +130,38 @@ public sealed class ForgejoRepositoryProviderClient
                     pull.Attachments = MergeAttachments(pull.Attachments, commentAttachments);
                 },
                 cancellationToken);
+
+            await foreach (var pull in pulls)
+            {
+                yield return pull;
+            }
         }
     }
 
-    public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+    public async IAsyncEnumerable<BackedUpRelease> ListReleasesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, repositoryPath) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectAsync(
+            var releases = CollectStreamAsync(
                 client,
                 page => $"{baseUrl}/repos/{repositoryPath}/releases?limit={PageSize}&page={page}",
                 MapGiteaRelease,
                 PageIsFull(PageSize),
                 cancellationToken);
+
+            await foreach (var release in releases)
+            {
+                yield return release;
+            }
         }
     }
 

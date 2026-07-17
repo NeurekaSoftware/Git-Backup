@@ -28,13 +28,13 @@ public sealed class ProjectMetadataSyncService
         string SupportLabel,
         string CountLabel,
         bool Supported,
-        Func<Task<IReadOnlyList<T>>> ListAsync,
+        Func<IAsyncEnumerable<T>> ListAsync,
         string CollectionPrefix,
         string ManifestObjectKey,
         Func<T, string> GetSlug,
         Func<string, string> BuildObjectKey,
         Func<string, string, string> BuildAttachmentObjectKey,
-        Func<IReadOnlyList<T>, string> SerializeManifest,
+        Func<T, object> ToManifestEntry,
         bool IncludeArtifacts)
         where T : class, IBackedUpArtifactItem;
 
@@ -91,9 +91,7 @@ public sealed class ProjectMetadataSyncService
                     GetSlug: issue => issue.Number.ToString(),
                     BuildObjectKey: slug => StorageKeyBuilder.BuildIssueObjectKey(repositoryPrefix, slug),
                     BuildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildIssueAttachmentObjectKey(repositoryPrefix, slug, fileName),
-                    SerializeManifest: items => StorageMetadataDocuments.Serialize(items
-                        .Select(issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt })
-                        .ToList()),
+                    ToManifestEntry: issue => new CollectionManifestEntry { Number = issue.Number, Title = issue.Title, State = issue.State, UpdatedAt = issue.UpdatedAt },
                     IncludeArtifacts: repository.IncludeIssueArtifacts == true),
                 backup,
                 cancellationToken);
@@ -113,9 +111,7 @@ public sealed class ProjectMetadataSyncService
                     GetSlug: mergeRequest => mergeRequest.Number.ToString(),
                     BuildObjectKey: slug => StorageKeyBuilder.BuildMergeRequestObjectKey(repositoryPrefix, slug),
                     BuildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildMergeRequestAttachmentObjectKey(repositoryPrefix, slug, fileName),
-                    SerializeManifest: items => StorageMetadataDocuments.Serialize(items
-                        .Select(mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt })
-                        .ToList()),
+                    ToManifestEntry: mergeRequest => new CollectionManifestEntry { Number = mergeRequest.Number, Title = mergeRequest.Title, State = mergeRequest.State, UpdatedAt = mergeRequest.UpdatedAt },
                     IncludeArtifacts: repository.IncludeMergeRequestsArtifacts == true),
                 backup,
                 cancellationToken);
@@ -135,9 +131,7 @@ public sealed class ProjectMetadataSyncService
                     GetSlug: release => ResolveReleaseSlug(release.Tag),
                     BuildObjectKey: slug => StorageKeyBuilder.BuildReleaseObjectKey(repositoryPrefix, slug),
                     BuildAttachmentObjectKey: (slug, fileName) => StorageKeyBuilder.BuildReleaseAttachmentObjectKey(repositoryPrefix, slug, fileName),
-                    SerializeManifest: items => StorageMetadataDocuments.Serialize(items
-                        .Select(release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt })
-                        .ToList()),
+                    ToManifestEntry: release => new ReleaseManifestEntry { Tag = release.Tag, Name = release.Name, PublishedAt = release.PublishedAt },
                     IncludeArtifacts: repository.IncludeReleaseArtifacts == true),
                 backup,
                 cancellationToken);
@@ -145,8 +139,8 @@ public sealed class ProjectMetadataSyncService
     }
 
     /// <summary>
-    /// Backs up one metadata collection (issues, merge requests, or releases). A failed list call is
-    /// logged and skipped so a partial fetch never drives a reconciliation delete.
+    /// Backs up one metadata collection (issues, merge requests, or releases). A partial fetch never
+    /// drives a reconciliation delete: a listing failure leaves the previous manifest untouched.
     /// </summary>
     private async Task BackUpCollectionAsync<T>(
         CollectionSpec<T> spec,
@@ -162,29 +156,12 @@ public sealed class ProjectMetadataSyncService
 
         AppLogger.Info("{Collection} backup started. repository={Repository}.", spec.Label, backup.RepositoryDisplay);
 
-        IReadOnlyList<T> items;
-        try
-        {
-            items = await spec.ListAsync();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            // A partial fetch must never drive reconciliation deletes, so skip the whole collection.
-            AppLogger.Error(exception, "{Collection} backup failed. repository={Repository}, error={ErrorMessage}.", spec.Label, backup.RepositoryDisplay, exception.Message);
-            return;
-        }
+        var backedUp = await SyncCollectionAsync(spec, backup, cancellationToken);
 
-        await SyncCollectionAsync(items, spec, backup, cancellationToken);
-
-        AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", spec.Label, backup.RepositoryDisplay, spec.CountLabel, items.Count);
+        AppLogger.Info("{Collection} backup completed. repository={Repository}, {CountName}={Count}.", spec.Label, backup.RepositoryDisplay, spec.CountLabel, backedUp);
     }
 
-    private static async Task SyncCollectionAsync<T>(
-        IReadOnlyList<T> items,
+    private static async Task<int> SyncCollectionAsync<T>(
         CollectionSpec<T> spec,
         CollectionBackupContext backup,
         CancellationToken cancellationToken)
@@ -192,60 +169,108 @@ public sealed class ProjectMetadataSyncService
     {
         var downloadArtifacts = spec.IncludeArtifacts && backup.MetadataClient.SupportsArtifacts;
         var anyItemFailed = 0;
+        var backedUp = 0;
+        var manifestEntries = new List<object>();
+        var fetchedSlugs = new HashSet<string>(StringComparer.Ordinal);
+        var accumulateLock = new object();
+        var listingFailed = false;
 
-        // Per-item work (attachment download + document upload) is independent, so it can overlap up
-        // to the configured degree. A single item's failure is logged and flagged rather than thrown,
-        // so one transient error no longer discards every other item's backup for this run (the
-        // per-attachment path already tolerates failures the same way).
-        await Parallel.ForEachAsync(
-            items,
-            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, backup.Context.Concurrency), CancellationToken = cancellationToken },
-            async (item, token) =>
-            {
-                var slug = spec.GetSlug(item);
-
-                try
+        // Stream the collection so it is never held in memory all at once. Per-item work (attachment
+        // download + document upload) overlaps up to the configured degree, and Parallel.ForEachAsync
+        // applies backpressure to the source, so peak memory is one provider page plus the in-flight
+        // items rather than every issue/MR with its full comment thread. A single item's failure is
+        // logged and flagged (not thrown) so it never discards the rest of the run.
+        try
+        {
+            await Parallel.ForEachAsync(
+                spec.ListAsync(),
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, backup.Context.Concurrency), CancellationToken = cancellationToken },
+                async (item, token) =>
                 {
-                    if (downloadArtifacts)
+                    var slug = spec.GetSlug(item);
+
+                    try
                     {
-                        await DownloadAttachmentsAsync(item, slug, spec.BuildAttachmentObjectKey, backup, token);
+                        if (downloadArtifacts)
+                        {
+                            await DownloadAttachmentsAsync(item, slug, spec.BuildAttachmentObjectKey, backup, token);
+                        }
+                        else
+                        {
+                            // Artifacts are gated off, so record no attachment references at all.
+                            item.Attachments = [];
+                        }
+
+                        await backup.ObjectStorageService.UploadTextAsync(
+                            spec.BuildObjectKey(slug),
+                            StorageMetadataDocuments.Serialize(item),
+                            token);
+
+                        var entry = spec.ToManifestEntry(item);
+                        lock (accumulateLock)
+                        {
+                            manifestEntries.Add(entry);
+                            fetchedSlugs.Add(slug);
+                            backedUp++;
+                        }
                     }
-                    else
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
                     {
-                        // Artifacts are gated off, so record no attachment references at all.
-                        item.Attachments = [];
+                        throw;
                     }
+                    catch (Exception exception)
+                    {
+                        Interlocked.Exchange(ref anyItemFailed, 1);
+                        lock (accumulateLock)
+                        {
+                            // Record the slug even on failure so a reconcile can never treat this
+                            // still-present item as removed (reconcile is skipped this run regardless).
+                            fetchedSlugs.Add(slug);
+                        }
 
-                    await backup.ObjectStorageService.UploadTextAsync(
-                        spec.BuildObjectKey(slug),
-                        StorageMetadataDocuments.Serialize(item),
-                        token);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception exception)
-                {
-                    Interlocked.Exchange(ref anyItemFailed, 1);
-                    AppLogger.Error(
-                        exception,
-                        "{Collection} item backup failed. repository={Repository}, slug={Slug}, error={ErrorMessage}.",
-                        spec.Label,
-                        backup.RepositoryDisplay,
-                        slug,
-                        exception.Message);
-                }
-            });
+                        AppLogger.Error(
+                            exception,
+                            "{Collection} item backup failed. repository={Repository}, slug={Slug}, error={ErrorMessage}.",
+                            spec.Label,
+                            backup.RepositoryDisplay,
+                            slug,
+                            exception.Message);
+                    }
+                });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // Listing/paging (or a per-item comment fetch) failed partway through the stream, so the set
+            // is incomplete. Leave the previous manifest in place and delete nothing this run.
+            listingFailed = true;
+            AppLogger.Error(
+                exception,
+                "{Collection} backup failed while listing. repository={Repository}, error={ErrorMessage}.",
+                spec.Label,
+                backup.RepositoryDisplay,
+                exception.Message);
+        }
 
-        await backup.ObjectStorageService.UploadTextAsync(spec.ManifestObjectKey, spec.SerializeManifest(items), cancellationToken);
+        if (listingFailed)
+        {
+            return backedUp;
+        }
+
+        await backup.ObjectStorageService.UploadTextAsync(
+            spec.ManifestObjectKey,
+            StorageMetadataDocuments.Serialize(manifestEntries),
+            cancellationToken);
 
         // Reconciliation deletes stored documents the provider no longer returns. Skip it when any item
         // failed this run so an item whose document did not upload is never mistaken for one removed
         // upstream and deleted — a partial set must not drive deletes.
         if (anyItemFailed == 0)
         {
-            await ReconcileAsync(items, spec.GetSlug, spec.CollectionPrefix, spec.ManifestObjectKey, backup.ObjectStorageService, cancellationToken);
+            await ReconcileAsync(fetchedSlugs, spec.CollectionPrefix, spec.ManifestObjectKey, backup.ObjectStorageService, cancellationToken);
         }
         else
         {
@@ -254,6 +279,8 @@ public sealed class ProjectMetadataSyncService
                 spec.Label,
                 backup.RepositoryDisplay);
         }
+
+        return backedUp;
     }
 
     private static async Task DownloadAttachmentsAsync(
@@ -316,18 +343,15 @@ public sealed class ProjectMetadataSyncService
     /// <summary>
     /// Deletes stored documents (and attachment subtrees) for items the provider no longer returns,
     /// so the backup mirrors upstream. Runs only after a complete, successful fetch — the manifest we
-    /// just wrote is left in place.
+    /// just wrote is left in place. <paramref name="fetchedSlugs"/> is the set of slugs seen this run.
     /// </summary>
-    private static async Task ReconcileAsync<T>(
-        IReadOnlyList<T> items,
-        Func<T, string> getSlug,
+    private static async Task ReconcileAsync(
+        HashSet<string> fetchedSlugs,
         string collectionPrefix,
         string manifestObjectKey,
         IObjectStorageService objectStorageService,
         CancellationToken cancellationToken)
-        where T : IBackedUpArtifactItem
     {
-        var fetchedSlugs = items.Select(getSlug).ToHashSet(StringComparer.Ordinal);
         var normalizedPrefix = StorageKeyBuilder.EnsurePrefix(collectionPrefix);
         var existingKeys = await objectStorageService.ListObjectKeysAsync(collectionPrefix, cancellationToken);
 

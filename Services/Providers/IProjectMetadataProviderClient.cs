@@ -22,17 +22,19 @@ public interface IProjectMetadataProviderClient
     // Whether the provider can resolve and download attachments/assets referenced by the metadata.
     bool SupportsArtifacts { get; }
 
-    Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
+    // Streamed so the caller can back up and release each item without the whole collection (issues or
+    // merge requests with their embedded comment threads) being held in memory at once.
+    IAsyncEnumerable<BackedUpIssue> ListIssuesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
+    IAsyncEnumerable<BackedUpMergeRequest> ListMergeRequestsAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
         CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+    IAsyncEnumerable<BackedUpRelease> ListReleasesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
         CancellationToken cancellationToken);

@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using GitBackup.Configuration.Models;
@@ -81,20 +82,20 @@ public sealed class GitLabRepositoryProviderClient
         return DistinctByCloneUrl(walkResults.SelectMany(walk => walk));
     }
 
-    public async Task<IReadOnlyList<BackedUpIssue>> ListIssuesAsync(
+    public async IAsyncEnumerable<BackedUpIssue> ListIssuesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, projectId) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectWithCommentsAsync(
+            var issues = CollectWithCommentsAsync(
                 client,
                 context.Concurrency,
                 page => $"{baseUrl}/projects/{projectId}/issues?per_page={PageSize}&page={page}",
@@ -112,23 +113,28 @@ public sealed class GitLabRepositoryProviderClient
                     issue.Attachments = ExtractAttachments(context, issue.Body, issue.Comments);
                 },
                 cancellationToken);
+
+            await foreach (var issue in issues)
+            {
+                yield return issue;
+            }
         }
     }
 
-    public async Task<IReadOnlyList<BackedUpMergeRequest>> ListMergeRequestsAsync(
+    public async IAsyncEnumerable<BackedUpMergeRequest> ListMergeRequestsAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, projectId) = CreateProjectClient(context, credential);
         using (client)
         {
-            return await CollectWithCommentsAsync(
+            var mergeRequests = CollectWithCommentsAsync(
                 client,
                 context.Concurrency,
                 page => $"{baseUrl}/projects/{projectId}/merge_requests?per_page={PageSize}&page={page}",
@@ -146,29 +152,39 @@ public sealed class GitLabRepositoryProviderClient
                     mergeRequest.Attachments = ExtractAttachments(context, mergeRequest.Body, mergeRequest.Comments);
                 },
                 cancellationToken);
+
+            await foreach (var mergeRequest in mergeRequests)
+            {
+                yield return mergeRequest;
+            }
         }
     }
 
-    public async Task<IReadOnlyList<BackedUpRelease>> ListReleasesAsync(
+    public async IAsyncEnumerable<BackedUpRelease> ListReleasesAsync(
         ProjectMetadataContext context,
         CredentialConfig credential,
-        CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (!HasApiKey(credential))
         {
-            return [];
+            yield break;
         }
 
         var (baseUrl, client, projectId) = CreateProjectClient(context, credential);
         var instanceHost = ResolveInstanceHost(context);
         using (client)
         {
-            return await CollectAsync(
+            var releases = CollectStreamAsync(
                 client,
                 page => $"{baseUrl}/projects/{projectId}/releases?per_page={PageSize}&page={page}",
                 item => MapRelease(item, instanceHost),
                 HasNextPage,
                 cancellationToken);
+
+            await foreach (var release in releases)
+            {
+                yield return release;
+            }
         }
     }
 
