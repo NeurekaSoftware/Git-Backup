@@ -178,13 +178,12 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
         // Store the JSON gzip-compressed with Content-Encoding: gzip. Issue/MR documents and manifests
         // are repetitive text that gzips several times over, cutting upload egress and stored size; a
         // client that honors Content-Encoding still reads plain JSON, and the object key stays *.json.
-        var compressed = GzipUtf8(content);
         AppLogger.Debug(
             "Uploading object. objectKey={ObjectKey}, contentType={ContentType}, contentEncoding=gzip.",
             normalizedObjectKey,
             JsonContentType);
 
-        using var stream = new MemoryStream(compressed, writable: false);
+        using var stream = GzipUtf8(content);
         await ExecuteAsync(
             "upload object",
             normalizedObjectKey,
@@ -200,16 +199,20 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
                 cancellationToken));
     }
 
-    private static byte[] GzipUtf8(string content)
+    // Returns the compressed bytes as a rewound stream ready to upload. Handing the buffer over directly
+    // avoids copying the whole document out with ToArray only to wrap it in a second MemoryStream —
+    // which for a busy issue thread or a large collection manifest is a copy worth not making.
+    private static MemoryStream GzipUtf8(string content)
     {
         var bytes = Encoding.UTF8.GetBytes(content);
-        using var output = new MemoryStream();
+        var output = new MemoryStream();
         using (var gzip = new GZipStream(output, CompressionLevel.Optimal, leaveOpen: true))
         {
             gzip.Write(bytes, 0, bytes.Length);
         }
 
-        return output.ToArray();
+        output.Position = 0;
+        return output;
     }
 
     public async Task UploadStreamAsync(

@@ -134,13 +134,14 @@ public sealed class RepositoryRetentionService
         // retention, so they are intentionally left untouched here.
         //
         // Precompute the deep collection prefixes for each emptied repository once, rather than
-        // rebuilding three interpolated strings per object key scanned.
-        var reclaimableCollectionPrefixes = new List<string>(emptiedRepositories.Count * 3);
+        // rebuilding three interpolated strings per object key scanned. Held as a set so a key can probe
+        // it directly instead of every key scanning every prefix.
+        var reclaimableCollectionPrefixes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var repositoryPrefix in emptiedRepositories)
         {
-            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.IssuesCollectionSegment}/");
-            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}/");
-            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.ReleasesCollectionSegment}/");
+            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.IssuesCollectionSegment}");
+            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.MergeRequestsCollectionSegment}");
+            reclaimableCollectionPrefixes.Add($"{repositoryPrefix}/{StorageKeyBuilder.ReleasesCollectionSegment}");
         }
 
         var orphanKeys = nonArchiveKeys
@@ -159,7 +160,7 @@ public sealed class RepositoryRetentionService
     private static bool IsReclaimableOrphan(
         string objectKey,
         HashSet<string> emptiedRepositories,
-        List<string> reclaimableCollectionPrefixes)
+        HashSet<string> reclaimableCollectionPrefixes)
     {
         // The advisory metadata.json is a direct child of the repository prefix.
         if (emptiedRepositories.Contains(StorageKeyBuilder.GetParentPrefix(objectKey)))
@@ -167,10 +168,14 @@ public sealed class RepositoryRetentionService
             return true;
         }
 
-        // Issue/merge-request/release documents and their attachments nest deeper under the prefix.
-        foreach (var prefix in reclaimableCollectionPrefixes)
+        // Issue/merge-request/release documents and their attachments nest deeper under the prefix. Walk
+        // this key's own ancestor prefixes — bounded by its segment count — and probe each one, rather
+        // than testing every emptied repository's prefixes against every key. Both of those grow with
+        // the bucket, so scanning one against the other degrades when a batch of repositories expires
+        // together; this does not.
+        for (var i = objectKey.IndexOf('/'); i > 0; i = objectKey.IndexOf('/', i + 1))
         {
-            if (objectKey.StartsWith(prefix, StringComparison.Ordinal))
+            if (reclaimableCollectionPrefixes.Contains(objectKey[..i]))
             {
                 return true;
             }
