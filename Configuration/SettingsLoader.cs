@@ -183,9 +183,17 @@ public sealed class SettingsLoader
         {
             errors.Add("storage.endpoint is required.");
         }
-        else if (!IsValidHttpUrl(settings.Storage.Endpoint))
+        else if (!GitRepositoryUrl.TryCreateHttpUrl(settings.Storage.Endpoint, out var storageEndpoint))
         {
             errors.Add("storage.endpoint must be an absolute http or https URL.");
+        }
+        else if (storageEndpoint.Scheme == Uri.UriSchemeHttp && !storageEndpoint.IsLoopback)
+        {
+            // Same rule the git transport already enforces: never put credentials or backup data on the
+            // wire in the clear. Plain http would expose the access key id and every archived byte to
+            // anyone on-path, and under payloadSignatureMode: unsigned nothing would detect a change to
+            // an uploaded object either. Loopback stays allowed for local testing.
+            errors.Add("storage.endpoint must use https for a non-loopback host.");
         }
 
         if (string.IsNullOrWhiteSpace(settings.Storage.Region))

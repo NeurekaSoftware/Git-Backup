@@ -36,10 +36,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
     private readonly ISimpleClient _client;
     private readonly string _bucket;
 
-    // A new storage client is built every run, so this warn-once latch keeps an insecure-endpoint
-    // notice from repeating on every cron cycle.
-    private static int _insecureEndpointWarned;
-
     public SimpleS3ObjectStorageService(StorageConfig storage)
     {
         _bucket = Require(storage.Bucket, "storage.bucket");
@@ -82,8 +78,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 
         _serviceProvider = services.BuildServiceProvider();
         _client = _serviceProvider.GetRequiredService<ISimpleClient>();
-
-        WarnOnceIfInsecureEndpoint(endpoint);
 
         AppLogger.Debug("Object storage client initialized. provider={Provider}.", "GenericS3");
         AppLogger.Debug(
@@ -472,25 +466,6 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
             PayloadSignatureModes.Unsigned => SignatureMode.Unsigned,
             _ => SignatureMode.FullSignature
         };
-    }
-
-    private static void WarnOnceIfInsecureEndpoint(string endpoint)
-    {
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
-            || !uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
-            || uri.IsLoopback)
-        {
-            return;
-        }
-
-        // A new storage client is built every run, so warn only once per process to avoid repeating
-        // the same misconfiguration notice on every cron cycle.
-        if (Interlocked.Exchange(ref _insecureEndpointWarned, 1) == 0)
-        {
-            AppLogger.Warn(
-                "Storage endpoint uses plain HTTP to a non-loopback host, so the access key id and object data travel unencrypted. Use https unless this is a trusted local network. endpoint={Endpoint}.",
-                endpoint);
-        }
     }
 
     private static string Require(string? value, string name)
