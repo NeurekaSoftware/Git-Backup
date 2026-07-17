@@ -80,11 +80,39 @@ public sealed class SettingsLoader
         }
 
         Normalize(settings);
+
+        // Resolve secrets before validation, so the required-value checks below see what will actually
+        // be used rather than the placeholder standing in for it.
+        var secretErrors = new List<string>();
+        ResolveSecrets(settings, secretErrors);
+        if (secretErrors.Count > 0)
+        {
+            return SettingsLoadResult.Failure(secretErrors);
+        }
+
         var errors = Validate(settings);
 
         return errors.Count == 0
             ? SettingsLoadResult.Success(settings)
             : SettingsLoadResult.Failure(errors);
+    }
+
+    /// <summary>
+    /// Replaces each configured secret with its resolved value, so a token can be supplied through an
+    /// environment variable or a secret file instead of being written into the settings file.
+    /// </summary>
+    private static void ResolveSecrets(Settings settings, List<string> errors)
+    {
+        settings.Storage.AccessKeyId = SecretResolver.Resolve(
+            settings.Storage.AccessKeyId, settings.Storage.AccessKeyIdFile, "storage.accessKeyId", errors);
+        settings.Storage.SecretAccessKey = SecretResolver.Resolve(
+            settings.Storage.SecretAccessKey, settings.Storage.SecretAccessKeyFile, "storage.secretAccessKey", errors);
+
+        foreach (var (name, credential) in settings.Credentials)
+        {
+            credential.ApiKey = SecretResolver.Resolve(
+                credential.ApiKey, credential.ApiKeyFile, $"credentials.{name}.apiKey", errors);
+        }
     }
 
     private static void Normalize(Settings settings)

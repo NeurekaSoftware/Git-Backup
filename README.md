@@ -169,6 +169,28 @@ The optional `concurrency` section tunes parallelism and defaults to fully seque
 > [!NOTE]
 > Backing up GitHub gists (`includeSnippets`) requires a **classic** personal access token with the `gist` scope — fine-grained tokens cannot read gists.
 
+### Keeping secrets out of settings.yaml
+
+`storage.accessKeyId`, `storage.secretAccessKey`, and each `credentials.*.apiKey` accept a literal value, a `${ENV_VAR}` placeholder, or a companion `*File` key naming a file to read. Anyone who can read `settings.yaml` can otherwise recover every forge token and your storage keys at once, so prefer one of the indirections outside local testing.
+
+```yaml
+storage:
+  # Read from the container environment — pairs with the .env file compose already loads.
+  accessKeyId: ${S3_ACCESS_KEY_ID}
+  secretAccessKey: ${S3_SECRET_ACCESS_KEY}
+
+credentials:
+  gitlab:
+    username: git
+    # Or read from a file, such as a Docker/Kubernetes secret mount.
+    apiKeyFile: /run/secrets/gitlab_token
+```
+
+A referenced variable that is not set, a file that cannot be read, or a field given both ways is rejected at load rather than started up without.
+
+> [!IMPORTANT]
+> `storage.endpoint` must use `https` unless it points at loopback, so backup data and your access key id are never sent in the clear.
+
 > [!IMPORTANT]
 > Issues, pull/merge requests, releases, and their attachments are backed up for **owned** repositories only. They are never fetched for **starred** repositories — even when `includeStarred` is enabled — nor for gists or snippets.
 
