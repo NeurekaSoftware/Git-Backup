@@ -137,6 +137,12 @@ concurrency:
   metadata: 1
 ```
 
+> [!NOTE]
+> Two storage behaviors differ from earlier releases: `storage.payloadSignatureMode` is currently
+> honored as `full` only (`streaming` and `unsigned` are accepted but log a warning and behave as
+> `full`), and issue/merge-request/release metadata JSON is stored uncompressed. Object keys and the
+> backup layout are unchanged.
+
 Each entry under `repositories` accepts the options below. **Common** options apply to both modes; the rest belong to `mode: provider` or `mode: url`.
 
 **Common**

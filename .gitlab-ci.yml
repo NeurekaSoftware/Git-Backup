@@ -8,7 +8,6 @@ include:
       tag: edge
       platforms: linux/amd64,linux/arm64
       build-args: >-
-        --build-arg BUILD_CONFIGURATION=Release
         --build-arg GIT_TAG=edge
         --build-arg GIT_HASH=$CI_COMMIT_SHA
 
@@ -17,28 +16,22 @@ docker-edge:
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# Validate the Rust rewrite (fmt, clippy, tests, release build) during the migration. Kept in the same
-# stage as docker-edge and independent of it, so a Rust failure surfaces without blocking the production
-# :edge image. Remove this job at promotion once the Rust crate moves to the repo root (see
-# gitbackup-rs/PROMOTION.md).
+# Fast lint/test gate for the crate, in the same stage as docker-edge and independent of it.
 rust-check:
   stage: build
   image: rust:1-bookworm
   variables:
-    CARGO_HOME: $CI_PROJECT_DIR/gitbackup-rs/.cargo
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo
   cache:
     key: rust-$CI_COMMIT_REF_SLUG
     paths:
-      - gitbackup-rs/.cargo
-      - gitbackup-rs/target
+      - .cargo
+      - target
   rules:
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - gitbackup-rs/**/*
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
     - rustup component add clippy rustfmt
   script:
-    - cd gitbackup-rs
     - cargo fmt --check
     - cargo clippy --all-targets -- -D warnings
     - cargo test --locked

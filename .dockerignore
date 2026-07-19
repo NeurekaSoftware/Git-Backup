@@ -5,7 +5,4 @@
 config/
 compose.yaml
 *.md
-**/bin
-**/obj
-# The Rust rewrite lives here during migration; the .NET image build must never pull it in.
-gitbackup-rs/
+target
