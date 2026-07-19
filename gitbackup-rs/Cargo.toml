@@ -57,6 +57,14 @@ tar = "0.4"
 async-trait = "0.1"
 rand = "0.8"
 
+# P4: git CLI service.
+base64 = "0.22"
+
+# Unix-only: kill the git process group (and its http/lfs children) on cancellation. The app is
+# Linux-targeted; on Windows (local dev only) the child is killed without tree semantics.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 # Optimize for size + low memory footprint per the rewrite's primary goal.
 opt-level = "z"
