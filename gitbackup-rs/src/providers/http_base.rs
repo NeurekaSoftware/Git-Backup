@@ -44,7 +44,7 @@ pub struct Auth<'a> {
 }
 
 impl Auth<'_> {
-    fn header_value(&self) -> String {
+    pub(crate) fn header_value(&self) -> String {
         match self.scheme {
             AuthScheme::Bearer => format!("Bearer {}", self.token),
             AuthScheme::Token => format!("token {}", self.token),
@@ -61,9 +61,12 @@ pub enum PageStrategy {
     GitLabNextPage,
 }
 
-/// A pooled forge HTTP client. Built once and shared; connection reuse happens inside reqwest.
+/// A pooled forge HTTP client. Built once and shared; connection reuse happens inside reqwest. A
+/// second, non-redirecting client serves attachment downloads so every redirect hop can be
+/// SSRF-checked before it is followed.
 pub struct ProviderHttp {
     client: Client,
+    attachment_client: Client,
 }
 
 impl ProviderHttp {
@@ -75,10 +78,36 @@ impl ProviderHttp {
         .unwrap_or_else(|_| HeaderValue::from_static("GitBackup"));
 
         let client = Client::builder()
-            .user_agent(user_agent)
+            .user_agent(user_agent.clone())
             .build()
             .context("provider: failed to build HTTP client")?;
-        Ok(Self { client })
+        let attachment_client = Client::builder()
+            .user_agent(user_agent)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("provider: failed to build attachment HTTP client")?;
+        Ok(Self {
+            client,
+            attachment_client,
+        })
+    }
+
+    /// Opens an attachment as a size-capped, SSRF-guarded stream (see [`super::attachments`]).
+    pub async fn download_attachment(
+        &self,
+        download_url: &str,
+        auth: &Auth<'_>,
+        trusted_host: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<super::attachments::AttachmentStream> {
+        super::attachments::open_stream(
+            &self.attachment_client,
+            download_url,
+            Some(auth),
+            trusted_host,
+            cancel,
+        )
+        .await
     }
 
     /// Issues a GET, retrying 429/5xx (honoring a capped `Retry-After`), and returns the final response
@@ -260,14 +289,14 @@ pub fn build_owner_repo_path(clone_url: &str) -> Result<String> {
     let (owner, repository) = resolve_owner_and_repository(clone_url)?;
     Ok(format!(
         "{}/{}",
-        urlencoding_encode(&owner),
-        urlencoding_encode(&repository)
+        escape_data_string(&owner),
+        escape_data_string(&repository)
     ))
 }
 
-/// Percent-encodes a path segment like .NET's `Uri.EscapeDataString`: escape everything except the
-/// RFC 3986 unreserved set (alphanumeric plus `-._~`).
-fn urlencoding_encode(value: &str) -> String {
+/// Percent-encodes like .NET's `Uri.EscapeDataString`: escape everything except the RFC 3986 unreserved
+/// set (alphanumeric plus `-._~`). Note `/` is escaped, matching GitLab's URL-encoded project path.
+pub(crate) fn escape_data_string(value: &str) -> String {
     const UNRESERVED: percent_encoding::AsciiSet = percent_encoding::NON_ALPHANUMERIC
         .remove(b'-')
         .remove(b'.')

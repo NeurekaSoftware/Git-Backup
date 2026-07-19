@@ -45,6 +45,8 @@ arc-swap = "1"
 croner = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10"
+# P7: short content hash for attachment storage names (SHA-1, first 4 bytes) ← ShortHash.
+sha1 = "0.10"
 # Pinned below url 2.5.3 to keep idna on 0.5 (unicode-* backend). url >=2.5.3 pulls the ICU/yoke
 # stack via idna 1.x, which fails to build here and roughly doubles the dependency tree and binary
 # size for punycode we do not need.

@@ -113,9 +113,10 @@ async fn url_mode_uploads_expected_keys_and_dedupes() {
 
     let working_root = std::env::temp_dir().join(format!("gitbackup-sync-{}", std::process::id()));
     let uploads_for_factory = Arc::clone(&uploads);
+    let provider_factory = Arc::new(RepositoryProviderClientFactory::new().unwrap());
 
     let service = RepositorySyncService::new(
-        Arc::new(RepositoryProviderClientFactory::new().unwrap()),
+        Arc::clone(&provider_factory),
         Arc::new(MockGit),
         Arc::new(move |_cfg: &_| {
             Ok(Box::new(MockStorage {
@@ -123,7 +124,7 @@ async fn url_mode_uploads_expected_keys_and_dedupes() {
             }) as Box<dyn ObjectStorage>)
         }),
         Arc::new(LocalMirrorStore::new(&working_root)),
-        Arc::new(ProjectMetadataSyncService::new()),
+        Arc::new(ProjectMetadataSyncService::new(provider_factory)),
     );
 
     service
