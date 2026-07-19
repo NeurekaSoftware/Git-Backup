@@ -6,8 +6,10 @@
 pub mod documents;
 pub mod local_mirror;
 pub mod metadata_sync;
+pub mod retention;
 pub mod sync;
 
 pub use local_mirror::LocalMirrorStore;
 pub use metadata_sync::ProjectMetadataSyncService;
+pub use retention::RepositoryRetentionService;
 pub use sync::RepositorySyncService;
