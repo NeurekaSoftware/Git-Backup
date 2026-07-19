@@ -48,6 +48,7 @@ chrono-tz = "0.10"
 # stack via idna 1.x, which fails to build here and roughly doubles the dependency tree and binary
 # size for punycode we do not need.
 url = "=2.5.2"
+percent-encoding = "2"
 
 [profile.release]
 # Optimize for size + low memory footprint per the rewrite's primary goal.

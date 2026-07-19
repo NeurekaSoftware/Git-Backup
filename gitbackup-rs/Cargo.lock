@@ -225,6 +225,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "percent-encoding",
  "regex",
  "serde",
  "serde_yaml_ng",

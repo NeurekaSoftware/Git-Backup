@@ -4,6 +4,7 @@
 //! transport allowlist, the storage-key parser, the attachment SSRF guard) and for normalizing an
 //! untrusted value into one safe storage-key segment. `split_unescaped_segments` lands in P2.
 
+use percent_encoding::percent_decode_str;
 use regex::Regex;
 use std::sync::LazyLock;
 use url::{Host, Url};
@@ -59,4 +60,15 @@ pub fn is_loopback(url: &Url) -> bool {
         Some(Host::Ipv6(ip)) => ip.is_loopback(),
         None => false,
     }
+}
+
+/// Splits a URL's path into its non-empty, percent-decoded, trimmed segments ←
+/// `SplitUnescapedSegments`.
+pub fn split_unescaped_segments(url: &Url) -> Vec<String> {
+    url.path()
+        .split('/')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| percent_decode_str(segment).decode_utf8_lossy().into_owned())
+        .collect()
 }
