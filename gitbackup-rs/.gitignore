@@ -1,0 +1,5 @@
+/target
+# Local secrets for the S3 parity harness (Backblaze/MinIO creds) — never commit.
+.env
+.env.local
+*.env.local

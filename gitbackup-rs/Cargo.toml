@@ -1,0 +1,43 @@
+[package]
+name = "gitbackup"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Backs up Git-forge repositories to S3-compatible object storage (Rust rewrite)"
+publish = false
+
+[lib]
+name = "gitbackup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gitbackup"
+path = "src/main.rs"
+
+[dependencies]
+# Core runtime + diagnostics used by every module. Heavier, phase-specific dependencies
+# (rust-s3, croner, tar, async-compression, reqwest, serde stack, unix process-group kill)
+# are added in the phase that first needs them, to keep incremental builds fast.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "signal",
+    "fs",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+
+[profile.release]
+# Optimize for size + low memory footprint per the rewrite's primary goal.
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
