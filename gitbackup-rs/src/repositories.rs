@@ -1,4 +1,13 @@
 //! Repositories ← `Services/Repositories/`.
 //!
 //! Sync orchestration (provider/url dispatch, bounded concurrency, snapshot upload), metadata sync
-//! (owned-only, partial-fetch-never-deletes), retention, and the local mirror store. Ported P6–P8.
+//! (owned-only, partial-fetch-never-deletes), retention, and the local mirror store.
+
+pub mod documents;
+pub mod local_mirror;
+pub mod metadata_sync;
+pub mod sync;
+
+pub use local_mirror::LocalMirrorStore;
+pub use metadata_sync::ProjectMetadataSyncService;
+pub use sync::RepositorySyncService;
