@@ -18,3 +18,12 @@ pub fn try_parse(expression: Option<&str>) -> Result<Cron, String> {
         .parse()
         .map_err(|_| "must be a valid 5-field or 6-field cron expression.".to_string())
 }
+
+/// The next occurrence strictly after now, evaluated in `tz` (local time), as a UTC instant. `None`
+/// when the schedule can never fire again.
+pub fn next_occurrence(cron: &Cron, tz: &chrono_tz::Tz) -> Option<chrono::DateTime<chrono::Utc>> {
+    let now_local = chrono::Utc::now().with_timezone(tz);
+    cron.find_next_occurrence(&now_local, false)
+        .ok()
+        .map(|occurrence| occurrence.with_timezone(&chrono::Utc))
+}

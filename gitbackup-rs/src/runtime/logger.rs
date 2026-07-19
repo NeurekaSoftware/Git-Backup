@@ -77,6 +77,21 @@ pub fn shutdown() {
     let _ = std::io::stdout().flush();
 }
 
+/// The configured local timezone (from `TZ`, UTC otherwise), for scheduling next-occurrence math.
+pub fn local_timezone() -> Tz {
+    *timezone()
+}
+
+/// Formats a UTC instant in the local zone as `yyyy-MM-dd HH:mm:ss (TZ)` ← `AppLogger.FormatTimestamp`.
+pub fn format_timestamp(instant: chrono::DateTime<Utc>) -> String {
+    let local = instant.with_timezone(timezone());
+    format!(
+        "{} ({})",
+        local.format("%Y-%m-%d %H:%M:%S"),
+        local.format("%Z")
+    )
+}
+
 fn level_enabled(level: Level) -> bool {
     app_rank(level) >= MIN_LEVEL.load(Ordering::Relaxed)
 }
