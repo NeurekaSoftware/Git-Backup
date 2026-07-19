@@ -29,10 +29,25 @@ tokio = { version = "1", features = [
     "time",
     "sync",
 ] }
+tokio-util = "0.7"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 anyhow = "1"
 thiserror = "2"
+
+# P1: config + logging.
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+regex = "1"
+sha2 = "0.10"
+arc-swap = "1"
+croner = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono-tz = "0.10"
+# Pinned below url 2.5.3 to keep idna on 0.5 (unicode-* backend). url >=2.5.3 pulls the ICU/yoke
+# stack via idna 1.x, which fails to build here and roughly doubles the dependency tree and binary
+# size for punycode we do not need.
+url = "=2.5.2"
 
 [profile.release]
 # Optimize for size + low memory footprint per the rewrite's primary goal.
