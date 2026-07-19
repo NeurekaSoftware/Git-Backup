@@ -16,3 +16,30 @@ include:
 docker-edge:
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Validate the Rust rewrite (fmt, clippy, tests, release build) during the migration. Kept in the same
+# stage as docker-edge and independent of it, so a Rust failure surfaces without blocking the production
+# :edge image. Remove this job at promotion once the Rust crate moves to the repo root (see
+# gitbackup-rs/PROMOTION.md).
+rust-check:
+  stage: build
+  image: rust:1-bookworm
+  variables:
+    CARGO_HOME: $CI_PROJECT_DIR/gitbackup-rs/.cargo
+  cache:
+    key: rust-$CI_COMMIT_REF_SLUG
+    paths:
+      - gitbackup-rs/.cargo
+      - gitbackup-rs/target
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - gitbackup-rs/**/*
+  before_script:
+    - rustup component add clippy rustfmt
+  script:
+    - cd gitbackup-rs
+    - cargo fmt --check
+    - cargo clippy --all-targets -- -D warnings
+    - cargo test --locked
+    - cargo build --release --locked
