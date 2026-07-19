@@ -29,7 +29,7 @@ tokio = { version = "1", features = [
     "time",
     "sync",
 ] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 anyhow = "1"
@@ -49,6 +49,13 @@ chrono-tz = "0.10"
 # size for punycode we do not need.
 url = "=2.5.2"
 percent-encoding = "2"
+
+# P3: S3-compatible object storage. rustls (no OpenSSL); default features off drops native-tls.
+rust-s3 = { version = "0.35", default-features = false, features = ["tokio-rustls-tls"] }
+flate2 = "1"
+tar = "0.4"
+async-trait = "0.1"
+rand = "0.8"
 
 [profile.release]
 # Optimize for size + low memory footprint per the rewrite's primary goal.

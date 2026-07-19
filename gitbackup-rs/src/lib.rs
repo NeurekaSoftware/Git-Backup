@@ -18,6 +18,7 @@ pub mod git;
 pub mod paths;
 pub mod providers;
 pub mod repositories;
+pub mod retry;
 pub mod runtime;
 pub mod scheduling;
 pub mod storage;
