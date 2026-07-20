@@ -1,29 +1,32 @@
 # syntax=docker/dockerfile:1.7
-#
-# Production image for the Rust rewrite. This is the PROMOTION artifact: it is written for a repo-root
-# build context (Cargo.toml, src/, entrypoint.sh all at ./), so at promotion it moves to ./Dockerfile
-# and replaces the .NET one unchanged. Until then, the Rust code is validated by the `rust-check` CI job.
-#
-# The runtime stage is deliberately identical in shape to the .NET image (Ubuntu noble + git/git-lfs/
-# gosu/tzdata/ca-certificates, /app/bin + /app/data, the same entrypoint.sh privilege-drop, the same
-# GIT_TAG/GIT_HASH/PUID/PGID args), so compose.yaml and entrypoint.sh carry over untouched.
 
-FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
-WORKDIR /app/src
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0-noble AS build
+ARG BUILD_CONFIGURATION=Release
+ARG TARGETARCH
+# Restore on its own layer, from the project file alone: a source-only change then reuses it instead of
+# re-resolving every package. The NuGet cache is locked for the whole RUN, so keeping compilation out of
+# this step releases it as early as possible, and the per-arch id stops the amd64 and arm64 stages of a
+# multi-platform build from serializing behind each other on one shared cache.
+COPY GitBackup.csproj /app/src/
+RUN --mount=type=cache,target=/root/.nuget/packages,id=nuget-$TARGETARCH,sharing=locked \
+    case "$TARGETARCH" in \
+      amd64) DOTNET_RID=linux-x64 ;; \
+      arm64) DOTNET_RID=linux-arm64 ;; \
+      *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && echo "$DOTNET_RID" > /tmp/dotnet-rid \
+ && dotnet restore /app/src/GitBackup.csproj -r "$DOTNET_RID"
 
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+COPY . /app/src/
+RUN --mount=type=cache,target=/root/.nuget/packages,id=nuget-$TARGETARCH,sharing=locked \
+    dotnet publish /app/src/GitBackup.csproj \
+      --no-restore \
+      --no-self-contained \
+      -c ${BUILD_CONFIGURATION} \
+      -r "$(cat /tmp/dotnet-rid)" \
+      -o /app/bin
 
-FROM chef AS build
-# Cook dependencies on their own cached layer from the recipe alone, so a source-only change reuses them.
-COPY --from=planner /app/src/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-COPY . .
-RUN cargo build --release --locked \
- && cp target/release/gitbackup /app/gitbackup
-
-FROM ubuntu:24.04
+FROM mcr.microsoft.com/dotnet/runtime:10.0-noble
 ARG GIT_TAG=dev
 ARG GIT_HASH=unknown
 # Default to a non-root UID/GID so an image run without PUID/PGID still drops privileges in the
@@ -42,12 +45,12 @@ RUN apt-get update \
 
 WORKDIR /app
 RUN mkdir -p /app/bin /app/data
-# /app/data holds the persisted settings-independent git-mirror cache; declare it a volume so the cache
-# survives container recreation instead of forcing a full re-clone each run.
+# /app/data holds the persisted settings file and the incremental git-mirror cache; declare it a
+# volume so the cache survives container recreation instead of forcing a full re-clone each run.
 VOLUME ["/app/data"]
-COPY --from=build /app/gitbackup /app/bin/gitbackup
+COPY --from=build /app/bin /app/bin
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["/app/bin/gitbackup"]
+CMD ["/app/bin/GitBackup"]

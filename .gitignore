@@ -1,5 +1,4 @@
-/target
+bin/
+obj/
 config/settings.yaml
 .env
-.env.local
-*.env.local

@@ -1,5 +1,0 @@
-# Pin the channel only (no host triple): local dev builds windows-gnu, CI builds linux-gnu,
-# both on stable. Keeps the toolchain reproducible without tying the repo to one OS.
-[toolchain]
-channel = "stable"
-components = ["clippy", "rustfmt"]

@@ -5,4 +5,5 @@
 config/
 compose.yaml
 *.md
-target
+**/bin
+**/obj
