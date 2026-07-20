@@ -2,10 +2,10 @@ stages:
   - build
 
 include:
-  - component: $CI_SERVER_FQDN/components/docker/build@1.0.0
+  - component: $CI_SERVER_FQDN/components/docker/build@2.0.0
     inputs:
       job-name: docker-edge
-      tag: edge
+      tags: edge
       platforms: linux/amd64,linux/arm64
       build-args: >-
         --build-arg BUILD_CONFIGURATION=Release
