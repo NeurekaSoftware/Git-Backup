@@ -185,6 +185,9 @@ The optional `concurrency` section tunes parallelism and defaults to fully seque
 > [!TIP]
 > Raising these overlaps network-bound work, but increases concurrent memory, local disk, and provider/S3 request pressure — raise gradually and watch for rate limiting (HTTP 429). With `cache: false`, running repositories in parallel multiplies peak local disk by the degree.
 
+> [!TIP]
+> The image is tuned for a small memory footprint (workstation GC that aggressively returns memory to the OS). This is ideal for a background backup, but adds some GC CPU. On a host where CPU matters more than RAM, lower it by setting `DOTNET_GCConserveMemory` (0–9, default `9`) in your environment — for example `DOTNET_GCConserveMemory=0` to disable it.
+
 ### Credentials
 
 Each key under `credentials` is a forge token, referenced by a repository job's `credential`. Every operation this tool performs is read-only, so create each token with the least privilege the features you enable require.

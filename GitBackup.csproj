@@ -6,6 +6,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Memory footprint: this is a long-running, I/O-bound batch backup, so favor a small heap over
+         raw throughput. Workstation GC (non-concurrent) keeps far less committed memory than the
+         server GC; dropping dynamic PGO removes its instrumentation overhead; and invariant
+         globalization avoids loading ICU (the whole app already normalizes with invariant culture). -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>false</TieredPGO>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>

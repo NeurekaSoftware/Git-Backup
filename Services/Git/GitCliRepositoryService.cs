@@ -103,10 +103,24 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
                result.StandardOutput.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
     }
 
+    // Bound git's native memory during clone/fetch, which is packing work outside the .NET heap and
+    // the largest uncapped RAM cost on big repositories. windowMemory caps the delta-compression
+    // window per thread and threads caps how many run at once (so total ~= threads x windowMemory);
+    // bigFileThreshold keeps large blobs out of delta compression (they are stored/streamed whole
+    // rather than diffed); packSizeLimit bounds a single output pack. Passed as `-c` (not secret, so
+    // safe in the process command line) ahead of the subcommand.
+    private static readonly string[] PackMemoryLimitArgs =
+    [
+        "-c", "pack.windowMemory=128m",
+        "-c", "pack.threads=2",
+        "-c", "core.bigFileThreshold=16m",
+        "-c", "pack.packSizeLimit=2g"
+    ];
+
     private static Task CloneMirrorAsync(string remoteUrl, string localPath, GitCredential? credential, CancellationToken cancellationToken)
     {
         return ExecuteGitAsync(
-            ["clone", "--mirror", "--", remoteUrl, localPath],
+            [.. PackMemoryLimitArgs, "clone", "--mirror", "--", remoteUrl, localPath],
             credential,
             credentialScopeUrl: remoteUrl,
             cancellationToken,
@@ -126,7 +140,7 @@ public sealed class GitCliRepositoryService : IGitRepositoryService
     private static Task FetchAsync(string localPath, string remoteUrl, GitCredential? credential, CancellationToken cancellationToken)
     {
         return ExecuteGitAsync(
-            ["-C", localPath, "fetch", "--all", "--prune"],
+            [.. PackMemoryLimitArgs, "-C", localPath, "fetch", "--all", "--prune"],
             credential,
             credentialScopeUrl: remoteUrl,
             cancellationToken,

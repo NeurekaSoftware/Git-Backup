@@ -80,30 +80,38 @@ public sealed class RepositoryRetentionService
         var repositoryKeysTask = objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.RepositoriesPrefix, cancellationToken);
         var snippetKeysTask = objectStorageService.ListObjectKeysAsync(StorageKeyBuilder.SnippetsPrefix, cancellationToken);
         await Task.WhenAll(repositoryKeysTask, snippetKeysTask);
-        var allKeys = (await repositoryKeysTask).Concat(await snippetKeysTask).ToList();
 
         // Classify every key exactly once here: archive keys feed the retention grouping below, and
         // everything else is a candidate orphan collected in nonArchiveKeys — so the orphan pass can
         // filter that list rather than re-parsing every key with TryGetArchiveTimestamp a second time.
+        // The two prefix listings are classified in place rather than concatenated into a combined
+        // list first, which would hold a redundant third copy of the whole key set.
         var snapshotsByRepository = new Dictionary<string, List<(string ObjectKey, long TimestampUnixSeconds)>>(StringComparer.Ordinal);
         var nonArchiveKeys = new List<string>();
-        foreach (var objectKey in allKeys)
+
+        void Classify(IReadOnlyList<string> objectKeys)
         {
-            if (!StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out var timestampUnixSeconds))
+            foreach (var objectKey in objectKeys)
             {
-                nonArchiveKeys.Add(objectKey);
-                continue;
-            }
+                if (!StorageKeyBuilder.TryGetArchiveTimestamp(objectKey, out var timestampUnixSeconds))
+                {
+                    nonArchiveKeys.Add(objectKey);
+                    continue;
+                }
 
-            var repositoryPrefix = StorageKeyBuilder.GetParentPrefix(objectKey);
-            if (!snapshotsByRepository.TryGetValue(repositoryPrefix, out var snapshots))
-            {
-                snapshots = [];
-                snapshotsByRepository[repositoryPrefix] = snapshots;
-            }
+                var repositoryPrefix = StorageKeyBuilder.GetParentPrefix(objectKey);
+                if (!snapshotsByRepository.TryGetValue(repositoryPrefix, out var snapshots))
+                {
+                    snapshots = [];
+                    snapshotsByRepository[repositoryPrefix] = snapshots;
+                }
 
-            snapshots.Add((objectKey, timestampUnixSeconds));
+                snapshots.Add((objectKey, timestampUnixSeconds));
+            }
         }
+
+        Classify(await repositoryKeysTask);
+        Classify(await snippetKeysTask);
 
         var expiredKeys = new List<string>();
         var emptiedRepositories = new HashSet<string>(StringComparer.Ordinal);

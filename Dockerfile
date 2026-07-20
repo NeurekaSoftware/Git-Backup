@@ -37,6 +37,12 @@ ENV GIT_TAG=${GIT_TAG}
 ENV GIT_HASH=${GIT_HASH}
 ENV PUID=$PUID
 ENV PGID=$PGID
+# Keep the .NET heap small: workstation GC is selected in the project file, and these ask the GC to
+# aggressively compact and return memory to the OS. The only cost is more frequent collections, which
+# barely matters for this I/O-bound workload (git + S3), where GC CPU overlaps with network waits.
+# Lower DOTNET_GCConserveMemory (0-9) if a run ever turns out CPU-bound.
+ENV DOTNET_GCConserveMemory=9
+ENV DOTNET_gcServer=0
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git git-lfs gosu tzdata ca-certificates \

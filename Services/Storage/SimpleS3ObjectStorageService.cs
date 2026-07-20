@@ -25,7 +25,11 @@ public sealed class SimpleS3ObjectStorageService : IObjectStorageService
 {
     private const string JsonContentType = "application/json";
     private const int MultipartPartSizeBytes = 16 * 1024 * 1024;
-    private const int MultipartParallelParts = 4;
+
+    // Number of parts uploaded concurrently. Peak upload RAM is partSize x (parallelParts + 1), so 2
+    // holds ~48 MiB in flight instead of ~80 MiB at 4 — without changing the part size, which would
+    // split each archive into more upload requests. Multiplied by concurrency.repositories.
+    private const int MultipartParallelParts = 2;
 
     // Largest payload sent as a single PutObject. Below this the whole body is held in memory briefly,
     // which is cheaper than a multipart round trip; above it, streaming multipart keeps peak memory flat.
